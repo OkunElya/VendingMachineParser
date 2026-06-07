@@ -1,0 +1,6 @@
+# Access tokens for the vending-machine-parser API.
+# Clients must send: Authorization: Bearer <token>
+# Replace these placeholder values before deploying anywhere shared.
+tokens:
+  web-app: "change-me-web-app-token"
+  dev: "change-me-dev-token"

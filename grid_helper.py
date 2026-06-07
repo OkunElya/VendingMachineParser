@@ -312,10 +312,10 @@ def build_grid(machine_info, window_points, items) -> GridResult | None:
 # Visualization
 # ---------------------------------------------------------------------------
 
-def visualize_grid(machine_image: np.ndarray,
-                   window_points: np.ndarray,
-                   grid: GridResult) -> None:
-    """Show the rectified window with row/column grid lines and cell labels."""
+def render_grid(machine_image: np.ndarray,
+                window_points: np.ndarray,
+                grid: GridResult) -> np.ndarray:
+    """Draw row/column grid lines and cell labels onto the rectified window image."""
     ordered     = order_corners(window_points)
     warped_view = warp_image(machine_image, ordered, grid.out_w, grid.out_h)
 
@@ -339,7 +339,7 @@ def visualize_grid(machine_image: np.ndarray,
         cv2.putText(warped_view, label, (cx + 6, cy - 4),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1, cv2.LINE_AA)
 
-    cv2.imshow("warped_grid", warped_view)
+    return warped_view
 
 
 def visualize_detection(machine_image: np.ndarray,
@@ -355,7 +355,7 @@ def visualize_detection(machine_image: np.ndarray,
     cv2.imshow("detection", vis)
 
     if grid is not None:
-        visualize_grid(machine_image, window_points, grid)
+        cv2.imshow("warped_grid", render_grid(machine_image, window_points, grid))
 
     cv2.waitKey(-1)
 
