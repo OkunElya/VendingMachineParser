@@ -124,6 +124,50 @@ canvas {
   margin-top: 0.75rem;
 }
 
+.divider {
+  margin: 1rem 0 0.5rem;
+  text-align: center;
+  font-size: 0.8rem;
+  color: #999;
+}
+
+.dropzone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 1.5rem 1rem;
+  border: 2px dashed #bbb;
+  border-radius: 8px;
+  color: #666;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+}
+
+.dropzone:hover,
+.dropzone:focus-visible {
+  border-color: #2a6df0;
+  background: #f5f8ff;
+  outline: none;
+}
+
+.dropzone.dragover {
+  border-color: #2a6df0;
+  background: #eef3ff;
+  color: #1d4ed8;
+}
+
+.dropzone.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.dropzone p {
+  margin: 0;
+  pointer-events: none;
+}
+
 .status {
   margin-top: 0.75rem;
   padding: 0.6rem 0.8rem;

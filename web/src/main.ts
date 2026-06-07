@@ -21,6 +21,15 @@ app.innerHTML = `
       <button id="capture-send" type="button" disabled>Capture &amp; recognize</button>
     </div>
     <div id="camera-status"></div>
+
+    <p class="divider">— or —</p>
+
+    <div id="upload-dropzone" class="dropzone" tabindex="0" role="button"
+         aria-label="Drop an image here or click to choose a file">
+      <p>Drag &amp; drop a photo here, or click to choose a file</p>
+      <input id="upload-input" type="file" accept="image/*" hidden />
+    </div>
+    <div id="upload-status"></div>
   </section>
 
   <section id="results-section" hidden>
@@ -47,6 +56,10 @@ const startCameraBtn = byId<HTMLButtonElement>("start-camera");
 const stopCameraBtn = byId<HTMLButtonElement>("stop-camera");
 const captureSendBtn = byId<HTMLButtonElement>("capture-send");
 const cameraStatus = byId<HTMLDivElement>("camera-status");
+
+const uploadDropzone = byId<HTMLDivElement>("upload-dropzone");
+const uploadInput = byId<HTMLInputElement>("upload-input");
+const uploadStatus = byId<HTMLDivElement>("upload-status");
 
 const resultsSection = byId<HTMLElement>("results-section");
 const resultsContainer = byId<HTMLDivElement>("results");
@@ -135,6 +148,80 @@ captureSendBtn.addEventListener("click", async () => {
   } finally {
     if (cameraRunning) captureSendBtn.disabled = false;
   }
+});
+
+// ---------------------------------------------------------------------------
+// File upload
+// ---------------------------------------------------------------------------
+
+async function recognizeUploadedFile(file: File): Promise<void> {
+  if (!file.type.startsWith("image/")) {
+    showStatus(uploadStatus, "Please choose an image file.", "error");
+    return;
+  }
+
+  const token = getToken();
+  if (!token) {
+    showStatus(
+      uploadStatus,
+      "No access token configured — open this page with ?token=<your-token> in the URL.",
+      "error",
+    );
+    return;
+  }
+
+  uploadDropzone.classList.add("disabled");
+  showStatus(uploadStatus, "Sending photo to backend for recognition…", "info");
+
+  try {
+    const response = await recognize(token, file, file.name || "upload.jpg");
+    renderResults(response.machines, token);
+    showStatus(
+      uploadStatus,
+      response.machines.length > 0
+        ? `Detected ${response.machines.length} vending machine(s).`
+        : "No vending machine was detected in the photo. Try a clearer or closer shot.",
+      response.machines.length > 0 ? "success" : "info",
+    );
+  } catch (err) {
+    const message = err instanceof ApiError ? err.message : describeUnknownError(err);
+    showStatus(uploadStatus, message, "error");
+  } finally {
+    uploadDropzone.classList.remove("disabled");
+    uploadInput.value = "";
+  }
+}
+
+uploadDropzone.addEventListener("click", () => uploadInput.click());
+uploadDropzone.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    uploadInput.click();
+  }
+});
+
+uploadInput.addEventListener("change", () => {
+  const file = uploadInput.files?.[0];
+  if (file) void recognizeUploadedFile(file);
+});
+
+["dragenter", "dragover"].forEach((eventName) => {
+  uploadDropzone.addEventListener(eventName, (event) => {
+    event.preventDefault();
+    uploadDropzone.classList.add("dragover");
+  });
+});
+
+["dragleave", "dragend", "drop"].forEach((eventName) => {
+  uploadDropzone.addEventListener(eventName, (event) => {
+    event.preventDefault();
+    uploadDropzone.classList.remove("dragover");
+  });
+});
+
+uploadDropzone.addEventListener("drop", (event) => {
+  const file = event.dataTransfer?.files?.[0];
+  if (file) void recognizeUploadedFile(file);
 });
 
 // Stop the camera when the page is unloaded so the device LED turns off.
