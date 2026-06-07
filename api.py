@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import time
 from pathlib import Path
 
 import cv2
@@ -17,7 +18,10 @@ from pipeline import MachineDetection, Pipeline
 _TOKENS_PATH  = "./tokens.yaml"
 _GALLERY_DIR  = Path("./gallery")
 _WEB_DIST_DIR = Path("./web/dist")
+_UPLOADS_DIR  = Path("./uploads")
 _IMAGE_EXTS   = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+
+_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _load_tokens() -> set[str]:
@@ -74,6 +78,12 @@ async def recognize(file: UploadFile = File(...), _token: str = Depends(require_
     """Run the detection pipeline on an uploaded image and return the parsed grid(s)."""
     raw   = await file.read()
     image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+
+    status = "OK" if image is not None else "FAIL"
+    suffix = Path(file.filename or "").suffix or ".jpg"
+    name   = f"{status}_{_token}_{int(time.time() * 1000)}{suffix}"
+    (_UPLOADS_DIR / name).write_bytes(raw)
+
     if image is None:
         raise HTTPException(status_code=400, detail="Could not decode image")
 
@@ -109,4 +119,4 @@ if _WEB_DIST_DIR.is_dir():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8004)
