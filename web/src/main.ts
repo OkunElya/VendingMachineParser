@@ -12,6 +12,7 @@ app.innerHTML = `
 
   <section id="camera-section">
     <h2>Camera</h2>
+    <p class="hint">Frame the shot so the whole vending machine fits inside the preview — cropped edges make the grid harder to recognize.</p>
     <video id="preview" autoplay playsinline muted></video>
     <canvas id="capture-canvas"></canvas>
     <div class="row camera-controls">

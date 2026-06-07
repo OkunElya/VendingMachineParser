@@ -261,33 +261,36 @@ def build_grid(machine_info, window_points, items) -> GridResult | None:
     ]
    
     # --- Column width fixup ---
-    reference_rows = list(filter(lambda row : len(row) == n_cols+1,row_col_borders))
-    min_val = min([row[0] for row in reference_rows])
-    max_val = max([row[-1] for row in reference_rows])
-    reference_rows.sort(key=lambda row:abs(min_val - row[0]) + abs(max_val - row[-1]))
-    
-    ref_row = reference_rows[0] # widest possible row
+    try:
+        reference_rows = list(filter(lambda row : len(row) == n_cols+1,row_col_borders))
+        min_val = min([row[0] for row in reference_rows])
+        max_val = max([row[-1] for row in reference_rows])
+        reference_rows.sort(key=lambda row:abs(min_val - row[0]) + abs(max_val - row[-1]))
+        
+        ref_row = reference_rows[0] # widest possible row
 
-    for r, grp in enumerate(row_groups):
-        row_sorted = sorted(grp, key=lambda i: left_xs[i])
-        borders    = row_col_borders[r]
-        mapping    = _align_row_borders(borders, ref_row)
-        if mapping is None:
-            continue
-        border_col = dict(zip(borders, mapping))
-        m = len(row_sorted)
-        for k, i in enumerate(row_sorted):
-            left_idx = border_col[float(left_xs[i])]
-            # a cell's right border is shared with the next cell's left border
-            # unless an empty gap separates them (or it's the last cell in the row)
-            if k + 1 < m and (left_xs[row_sorted[k + 1]] - right_xs[i]) <= 0.5 * unit_width:
-                right_val = float(left_xs[row_sorted[k + 1]])
-            else:
-                right_val = float(right_xs[i])
-            right_idx = border_col[right_val]
-            cells[i].col      = left_idx
-            cells[i].col_span = max(1, right_idx - left_idx)
-
+        for r, grp in enumerate(row_groups):
+            row_sorted = sorted(grp, key=lambda i: left_xs[i])
+            borders    = row_col_borders[r]
+            mapping    = _align_row_borders(borders, ref_row)
+            if mapping is None:
+                continue
+            border_col = dict(zip(borders, mapping))
+            m = len(row_sorted)
+            for k, i in enumerate(row_sorted):
+                left_idx = border_col[float(left_xs[i])]
+                # a cell's right border is shared with the next cell's left border
+                # unless an empty gap separates them (or it's the last cell in the row)
+                if k + 1 < m and (left_xs[row_sorted[k + 1]] - right_xs[i]) <= 0.5 * unit_width:
+                    right_val = float(left_xs[row_sorted[k + 1]])
+                else:
+                    right_val = float(right_xs[i])
+                right_idx = border_col[right_val]
+                cells[i].col      = left_idx
+                cells[i].col_span = max(1, right_idx - left_idx)
+    except Exception as e:
+        print("fixup failed")
+        
     # --- 2-D grid allocation -------------------------------------------------
     grid_2d: list[list[int | None]] = [[None] * n_cols for _ in range(n_rows)]
     for idx, cell in enumerate(cells):

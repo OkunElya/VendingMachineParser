@@ -19,7 +19,11 @@ export async function startCamera(video: HTMLVideoElement): Promise<MediaStream>
   let stream: MediaStream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: "environment" },
+      video: {
+        facingMode: "environment",
+        width: { ideal: 4096 },
+        height: { ideal: 2160 },
+      },
       audio: false,
     });
   } catch (err) {
