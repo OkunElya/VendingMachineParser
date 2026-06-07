@@ -173,8 +173,7 @@ def build_grid(machine_info, window_points, items) -> GridResult | None:
     max_cols    = machine_info.get("max_cols", 10)
     bottom_25_n = max(1, N // 4)
     unit_width  = float(np.sort(warped_widths)[:bottom_25_n].mean())
-    col_spans   = np.maximum(1, np.floor(warped_widths / unit_width).astype(int))
-
+    col_spans   = np.maximum(1, np.floor((warped_widths / unit_width)+0.25).astype(int))
     col_of:          np.ndarray       = np.zeros(N, dtype=int)
     n_cols_per_row:  list[int]        = []
     row_col_borders: list[list[float]] = []
@@ -183,10 +182,15 @@ def build_grid(machine_info, window_points, items) -> GridResult | None:
         row_sorted = sorted(grp, key=lambda i: left_xs[i])
         borders: list[float] = []
         col = 0
+        last_right = min(left_xs) #imagnary item at the beggining of each row 
         for i in row_sorted:
+            if (left_xs[i]-last_right) > 0.5 * unit_width :
+                borders.append(float(right_xs[i]))
+                col+=1
             borders.append(float(left_xs[i]))
             col_of[i] = col
             col += int(col_spans[i])
+            last_right = right_xs[i]
         borders.append(float(right_xs[row_sorted[-1]]))
         row_col_borders.append(borders)
         n_cols_per_row.append(col)
