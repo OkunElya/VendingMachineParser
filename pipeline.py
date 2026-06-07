@@ -95,8 +95,6 @@ class Pipeline:
 
             if grid is not None:
                 self._classify_items(detection)
-                print(build_markdown_table(grid))
-
             results.append(detection)
 
         return results
@@ -110,6 +108,8 @@ class Pipeline:
 if __name__ == "__main__":
     import cv2
     pipeline = Pipeline()
-    results = pipeline.detect(cv2.imread("./workspace/rew-02.webp"))
+    results = pipeline.detect(cv2.imread("./workspace/kartinki-dlya-sajta_rosso-bar.webp"))
     for det in results:
         pipeline.visualize(det)
+        print(build_markdown_table(det.grid))
+

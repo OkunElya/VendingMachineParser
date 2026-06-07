@@ -117,6 +117,43 @@ class GridResult:
 # Grid fitting
 # ---------------------------------------------------------------------------
 
+def _align_row_borders(borders: list[float], ref: list[float]) -> list[int] | None:
+    """
+    Find the order-preserving injection from `borders` into indices of `ref`
+    that minimises the total absolute horizontal distance between matched
+    values (DP over monotonic matchings of two sorted sequences).
+
+    Returns the matched ref-index for each border, or None when `borders`
+    is longer than `ref` (no valid injection exists).
+    """
+    m, n = len(borders), len(ref)
+    if m > n:
+        return None
+
+    INF  = float("inf")
+    dp   = [[INF] * n for _ in range(m)]
+    back = [[-1]  * n for _ in range(m)]
+
+    for j in range(n):
+        dp[0][j] = abs(borders[0] - ref[j])
+
+    for i in range(1, m):
+        best_j, best_cost = -1, INF
+        for j in range(n):
+            if j - 1 >= 0 and dp[i - 1][j - 1] < best_cost:
+                best_cost, best_j = dp[i - 1][j - 1], j - 1
+            if best_j != -1:
+                dp[i][j]   = best_cost + abs(borders[i] - ref[j])
+                back[i][j] = best_j
+
+    j = min(range(n), key=lambda j: dp[m - 1][j])
+    mapping = [0] * m
+    for i in range(m - 1, -1, -1):
+        mapping[i] = j
+        j = back[i][j]
+    return mapping
+
+
 def build_grid(machine_info, window_points, items) -> GridResult | None:
     """
     Build a perspective-corrected grid from detected OBBs.
@@ -184,9 +221,13 @@ def build_grid(machine_info, window_points, items) -> GridResult | None:
         col = 0
         last_right = min(left_xs) #imagnary item at the beggining of each row 
         for i in row_sorted:
-            if (left_xs[i]-last_right) > 0.5 * unit_width :
-                borders.append(float(right_xs[i]))
-                col+=1
+            gap = left_xs[i] - last_right
+            if gap > 0.5 * unit_width:
+                # one or more empty cells sit between the previous item and this one
+                gap_cols = max(1, int(round(gap / unit_width)))
+                for g in range(gap_cols):
+                    borders.append(float(last_right + g * gap / gap_cols))
+                col += gap_cols
             borders.append(float(left_xs[i]))
             col_of[i] = col
             col += int(col_spans[i])
@@ -218,6 +259,34 @@ def build_grid(machine_info, window_points, items) -> GridResult | None:
         )
         for i in range(N)
     ]
+   
+    # --- Column width fixup ---
+    reference_rows = list(filter(lambda row : len(row) == n_cols+1,row_col_borders))
+    min_val = min([row[0] for row in reference_rows])
+    max_val = max([row[-1] for row in reference_rows])
+    reference_rows.sort(key=lambda row:abs(min_val - row[0]) + abs(max_val - row[-1]))
+    
+    ref_row = reference_rows[0] # widest possible row
+
+    for r, grp in enumerate(row_groups):
+        row_sorted = sorted(grp, key=lambda i: left_xs[i])
+        borders    = row_col_borders[r]
+        mapping    = _align_row_borders(borders, ref_row)
+        if mapping is None:
+            continue
+        border_col = dict(zip(borders, mapping))
+        m = len(row_sorted)
+        for k, i in enumerate(row_sorted):
+            left_idx = border_col[float(left_xs[i])]
+            # a cell's right border is shared with the next cell's left border
+            # unless an empty gap separates them (or it's the last cell in the row)
+            if k + 1 < m and (left_xs[row_sorted[k + 1]] - right_xs[i]) <= 0.5 * unit_width:
+                right_val = float(left_xs[row_sorted[k + 1]])
+            else:
+                right_val = float(right_xs[i])
+            right_idx = border_col[right_val]
+            cells[i].col      = left_idx
+            cells[i].col_span = max(1, right_idx - left_idx)
 
     # --- 2-D grid allocation -------------------------------------------------
     grid_2d: list[list[int | None]] = [[None] * n_cols for _ in range(n_rows)]
