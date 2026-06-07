@@ -14,6 +14,7 @@ _WEIGHTS_PATH   = "./models/tuned/items_classification_convnext_tiny.fb_in22k_ft
 _GALLERY_PATH   = "./models/tuned/items_classification.npy"
 _BACKBONE_ID    = "hf_hub:timm/convnext_tiny.fb_in22k_ft_in1k"
 _EMBEDDING_SIZE = 512
+_INPUT_SIZE     = 224   # encoder was fine-tuned on images padded-to-square then resized to this
 _IMG_EXTS       = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 _TRANSFORM = transforms.Compose([
@@ -123,6 +124,7 @@ class ProductBank:
 
     def _embed(self, img_bgr: np.ndarray) -> np.ndarray:
         square = self._pad_square(img_bgr)
+        square = cv2.resize(square, (_INPUT_SIZE, _INPUT_SIZE), interpolation=cv2.INTER_LINEAR)
         rgb    = cv2.cvtColor(square, cv2.COLOR_BGR2RGB)
         tensor = _TRANSFORM(Image.fromarray(rgb)).unsqueeze(0).to(self.device)
         with torch.no_grad():
