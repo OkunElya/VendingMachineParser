@@ -39,7 +39,7 @@ class Pipeline:
         self.product_bank          = ProductBank()
 
     def _detect_machines(self, image):
-        return self.machine_detector.predict(image, verbose=False, conf=0.25)[0].boxes.xyxy
+        return self.machine_detector.predict(image, verbose=False, conf=0.3,iou=0.5)[0].boxes.xyxy
 
     def _get_machine_classification(self, machine_image):
         result = self.machine_classificator.predict(machine_image, verbose=False, conf=0.25)[0]
