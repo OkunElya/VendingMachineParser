@@ -6,3 +6,5 @@ uploads
 tokens.yaml
 
 *.tar.gz
+yolo26n.pt
+lightning_logs

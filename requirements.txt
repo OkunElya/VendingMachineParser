@@ -32,3 +32,4 @@ PyYAML==6.0.2
 # Utilities used by scripts / notebooks
 tqdm==4.67.1
 matplotlib==3.10.5
+rapidfuzz==3.14.3
