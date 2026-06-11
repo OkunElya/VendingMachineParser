@@ -132,7 +132,7 @@ class ProductBank:
 
     def _crop_largest_obb(self, img: np.ndarray, item_detector) -> np.ndarray:
         """Run detector and return an axis-aligned crop of the largest OBB."""
-        from grid_helper import obb_xywhr_to_corners
+        from src.python.grid_helper import obb_xywhr_to_corners
         try:
             obbs = item_detector(img)
             if obbs is not None and len(obbs):

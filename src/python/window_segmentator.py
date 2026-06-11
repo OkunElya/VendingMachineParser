@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 from ultralytics import YOLO
-from shared import MODEL_PATHES 
+from src.python.shared import MODEL_PATHES 
 
 
 def process_mask_matrix(mask_matrix):

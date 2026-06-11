@@ -12,8 +12,8 @@ from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 
-from grid_helper import build_markdown_table, render_grid
-from pipeline import MachineDetection, Pipeline
+from src.python.grid_helper import build_markdown_table, render_grid
+from src.python.pipeline import MachineDetection, Pipeline
 
 _TOKENS_PATH  = "./tokens.yaml"
 _GALLERY_DIR  = Path("./gallery")

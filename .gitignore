@@ -4,3 +4,5 @@ workspace
 gallery
 uploads
 tokens.yaml
+
+*.tar.gz
