@@ -7,9 +7,9 @@ import numpy as np
 import torch
 from ultralytics import YOLO
 
-from src.python.shared import MODEL_PATHES, MACHINE_CLASSES
-from src.python.window_segmentator import WindowSegmentator
-from src.python.grid_helper import (
+from shared import MODEL_PATHES, MACHINE_CLASSES
+from window_segmentator import WindowSegmentator
+from grid_helper import (
     GridResult,
     build_grid,
     order_corners,
@@ -17,7 +17,7 @@ from src.python.grid_helper import (
     build_markdown_table,
     visualize_detection,
 )
-from src.python.item_classification import ProductBank
+from item_classification import ProductBank
 
 
 @dataclass

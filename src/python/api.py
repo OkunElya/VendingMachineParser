@@ -12,12 +12,12 @@ from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 
-from src.python.grid_helper import build_markdown_table, render_grid
-from src.python.pipeline import MachineDetection, Pipeline
+from grid_helper import build_markdown_table, render_grid
+from pipeline import MachineDetection, Pipeline
 
 _TOKENS_PATH  = "./tokens.yaml"
 _GALLERY_DIR  = Path("./gallery")
-_WEB_DIST_DIR = Path("./web/dist")
+_WEB_DIST_DIR = Path(".src/web/dist")
 _UPLOADS_DIR  = Path("./uploads")
 _IMAGE_EXTS   = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
@@ -116,7 +116,3 @@ def product_image(name: str, _token: str = Depends(require_token)):
 if _WEB_DIST_DIR.is_dir():
     app.mount("/", StaticFiles(directory=_WEB_DIST_DIR, html=True), name="web")
 
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8004)
