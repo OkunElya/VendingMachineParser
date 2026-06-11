@@ -7,7 +7,15 @@ import numpy as np
 import torch
 from ultralytics import YOLO
 
-from shared import MODEL_PATHES, MACHINE_CLASSES
+from shared import (
+    MODEL_PATHES,
+    MACHINE_CLASSES,
+    MACHINE_DETECTOR_CONF,
+    MACHINE_DETECTOR_IOU,
+    MACHINE_CLASSIFIER_CONF,
+    ITEM_DETECTOR_CONF,
+    ITEM_DETECTOR_IOU,
+)
 from window_segmentator import WindowSegmentator
 from grid_helper import (
     GridResult,
@@ -39,10 +47,10 @@ class Pipeline:
         self.product_bank          = ProductBank()
 
     def _detect_machines(self, image):
-        return self.machine_detector.predict(image, verbose=False, conf=0.3,iou=0.5)[0].boxes.xyxy
+        return self.machine_detector.predict(image, verbose=False, conf=MACHINE_DETECTOR_CONF, iou=MACHINE_DETECTOR_IOU)[0].boxes.xyxy
 
     def _get_machine_classification(self, machine_image):
-        result = self.machine_classificator.predict(machine_image, verbose=False, conf=0.25)[0]
+        result = self.machine_classificator.predict(machine_image, verbose=False, conf=MACHINE_CLASSIFIER_CONF)[0]
         probs  = result.probs.data
         print(probs)
         return torch.argmax(probs).item()
@@ -51,7 +59,13 @@ class Pipeline:
         return self.window_segmentator.getPoly(image)
 
     def _detect_items(self, image):
-        return self.item_detector.predict(image, verbose=False, conf=0.35)[0].obb.xywhr
+        result = self.item_detector.predict(image, verbose=False, conf=ITEM_DETECTOR_CONF, iou=ITEM_DETECTOR_IOU)[0]
+        if result.obb is not None:
+            return result.obb.xywhr
+        # plain bbox model: pad xywh with a zero rotation column so downstream
+        # grid code (which expects xywhr) works unchanged
+        boxes = result.boxes.xywh
+        return torch.cat([boxes, torch.zeros((boxes.shape[0], 1), device=boxes.device)], dim=1)
 
     def _classify_items(self, detection: MachineDetection) -> None:
         grid    = detection.grid

@@ -14,12 +14,12 @@ from fastapi.staticfiles import StaticFiles
 
 from grid_helper import build_markdown_table, render_grid
 from pipeline import MachineDetection, Pipeline
+from shared import IMAGE_EXTS
 
 _TOKENS_PATH  = "./tokens.yaml"
 _GALLERY_DIR  = Path("./gallery")
-_WEB_DIST_DIR = Path(".src/web/dist")
+_WEB_DIST_DIR = Path("./src/web/dist")
 _UPLOADS_DIR  = Path("./uploads")
-_IMAGE_EXTS   = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 _UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -102,7 +102,7 @@ def product_image(name: str, _token: str = Depends(require_token)):
         raise HTTPException(status_code=404, detail=f"Unknown product '{name}'")
 
     image_path = next(
-        (p for p in sorted(match.iterdir()) if p.suffix.lower() in _IMAGE_EXTS),
+        (p for p in sorted(match.iterdir()) if p.suffix.lower() in IMAGE_EXTS),
         None,
     )
     if image_path is None:

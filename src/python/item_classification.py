@@ -1,5 +1,6 @@
 import math
 import os
+import threading
 import numpy as np
 import cv2
 import torch
@@ -10,12 +11,15 @@ import torchvision.transforms.v2 as transforms
 from PIL import Image
 from pathlib import Path
 
-_WEIGHTS_PATH   = "./models/tuned/items_classification_convnext_tiny.fb_in22k_ft_in1k.pt"
-_GALLERY_PATH   = "./models/tuned/items_classification.npy"
-_BACKBONE_ID    = "hf_hub:timm/convnext_tiny.fb_in22k_ft_in1k"
-_EMBEDDING_SIZE = 512
-_INPUT_SIZE     = 224   # encoder was fine-tuned on images padded-to-square then resized to this
-_IMG_EXTS       = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+from shared import (
+    MODEL_PATHES,
+    ITEM_GALLERY_PATH,
+    GALLERY_DIR,
+    ITEM_CLASSIFICATION_BACKBONE,
+    ITEM_EMBEDDING_SIZE,
+    ITEM_INPUT_SIZE,
+    IMAGE_EXTS,
+)
 
 _TRANSFORM = transforms.Compose([
     transforms.ToImage(),
@@ -53,9 +57,9 @@ class ArcMarginProduct(nn.Module):
 
 class _Encoder(nn.Module):
     """Inference-only backbone: ConvNeXt + BN + embedding projection."""
-    def __init__(self, embedding_size: int = _EMBEDDING_SIZE):
+    def __init__(self, embedding_size: int = ITEM_EMBEDDING_SIZE):
         super().__init__()
-        self.backbone = timm.create_model(_BACKBONE_ID, pretrained=False)
+        self.backbone = timm.create_model(ITEM_CLASSIFICATION_BACKBONE, pretrained=False)
         num_feat = self.backbone.num_features
         self.backbone.head.fc = nn.Identity()
         self.bn_layer     = nn.BatchNorm1d(num_feat)
@@ -82,9 +86,9 @@ class ProductBank:
     """
 
     def __init__(self,
-                 model_path:     str               = _WEIGHTS_PATH,
-                 gallery_path:   str               = _GALLERY_PATH,
-                 embedding_size: int               = _EMBEDDING_SIZE,
+                 model_path:     str               = MODEL_PATHES["item_classificator"],
+                 gallery_path:   str               = ITEM_GALLERY_PATH,
+                 embedding_size: int               = ITEM_EMBEDDING_SIZE,
                  device:         torch.device | None = None):
         self.gallery_path = Path(gallery_path)
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -98,6 +102,9 @@ class ProductBank:
 
         self._names:  list[str]  | None = None
         self._matrix: np.ndarray | None = None   # (N_classes, embedding_size)
+        # guards _names/_matrix so a background recompute_class() (e.g. run
+        # from a worker thread) can't be observed mid-swap by lookup_topk()
+        self._lock = threading.RLock()
 
         if self.gallery_path.exists():
             self._load_gallery()
@@ -107,9 +114,17 @@ class ProductBank:
     # ------------------------------------------------------------------
 
     def _load_gallery(self) -> None:
-        data = np.load(self.gallery_path, allow_pickle=True).item()
-        self._names  = list(data.keys())
-        self._matrix = np.stack([data[k] for k in self._names]).astype(np.float32)
+        data  = np.load(self.gallery_path, allow_pickle=True).item()
+        names = list(data.keys())
+        matrix = np.stack([data[k] for k in names]).astype(np.float32)
+        # gallery rows are means of L2-normalised embeddings, so they aren't
+        # unit-length themselves; re-normalise so the dot product in lookup()
+        # is a true cosine similarity
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        matrix = matrix / np.clip(norms, 1e-12, None)
+        with self._lock:
+            self._names  = names
+            self._matrix = matrix
 
     def _pad_square(self, img_bgr: np.ndarray) -> np.ndarray:
         """Zero-pad a BGR image to a square (centred)."""
@@ -124,7 +139,7 @@ class ProductBank:
 
     def _embed(self, img_bgr: np.ndarray) -> np.ndarray:
         square = self._pad_square(img_bgr)
-        square = cv2.resize(square, (_INPUT_SIZE, _INPUT_SIZE), interpolation=cv2.INTER_LINEAR)
+        square = cv2.resize(square, (ITEM_INPUT_SIZE, ITEM_INPUT_SIZE), interpolation=cv2.INTER_LINEAR)
         rgb    = cv2.cvtColor(square, cv2.COLOR_BGR2RGB)
         tensor = _TRANSFORM(Image.fromarray(rgb)).unsqueeze(0).to(self.device)
         with torch.no_grad():
@@ -154,6 +169,12 @@ class ProductBank:
     # Public API
     # ------------------------------------------------------------------
 
+    @property
+    def class_names(self) -> list[str]:
+        """All class names currently loaded in the gallery."""
+        with self._lock:
+            return list(self._names) if self._names else []
+
     def build_cache(self, gallery_dir: str, item_detector) -> None:
         """
         Build and save the embedding gallery.
@@ -174,7 +195,7 @@ class ProductBank:
                 continue
             embeddings = []
             for img_path in sorted(class_dir.iterdir()):
-                if img_path.suffix.lower() not in _IMG_EXTS:
+                if img_path.suffix.lower() not in IMAGE_EXTS:
                     continue
                 img = cv2.imread(str(img_path))
                 if img is None:
@@ -191,15 +212,75 @@ class ProductBank:
         self._load_gallery()
         print(f"Gallery saved → {self.gallery_path}  ({len(gallery_data)} classes)")
 
+    def recompute_class(self,
+                         class_name:   str,
+                         item_detector,
+                         gallery_dir:  str | None = None,
+                         progress_cb=None) -> bool:
+        """
+        Recompute the embedding for a single class from its gallery images
+        and write it back into the saved gallery, leaving every other
+        class's embedding untouched (no full rebuild). Inserts a new row
+        when `class_name` is not yet in the gallery.
+
+        progress_cb(class_name, done, total), if given, is called after each
+        image of the class is embedded.
+
+        Returns True if the embedding was updated/inserted, False if the
+        class directory has no usable images.
+        """
+        class_dir = Path(gallery_dir or GALLERY_DIR) / class_name
+        img_paths = [p for p in sorted(class_dir.iterdir()) if p.suffix.lower() in IMAGE_EXTS] \
+            if class_dir.exists() else []
+
+        embeddings = []
+        for i, img_path in enumerate(img_paths):
+            img = cv2.imread(str(img_path))
+            if img is None:
+                continue
+            crop = self._crop_largest_obb(img, item_detector)
+            embeddings.append(self._embed(crop))
+            if progress_cb:
+                progress_cb(class_name, i + 1, len(img_paths))
+
+        if not embeddings:
+            return False
+
+        data: dict[str, np.ndarray] = {}
+        if self.gallery_path.exists():
+            data = np.load(self.gallery_path, allow_pickle=True).item()
+        data[class_name] = np.mean(embeddings, axis=0).astype(np.float32)
+
+        self.gallery_path.parent.mkdir(parents=True, exist_ok=True)
+        np.save(str(self.gallery_path), data, allow_pickle=True)
+        self._load_gallery()
+        return True
+
     def lookup(self, crop_bgr: np.ndarray) -> tuple[str | None, float]:
         """
         Classify a product crop (any dimensions).
 
         Returns (class_name, cosine_similarity) or (None, 0.0) if no gallery.
         """
-        if self._matrix is None or not self._names:
+        with self._lock:
+            matrix, names = self._matrix, self._names
+        if matrix is None or not names:
             return None, 0.0
         emb    = self._embed(crop_bgr)
-        scores = self._matrix @ emb        # dot product of L2-normalised vecs = cosine sim
+        scores = matrix @ emb        # dot product of L2-normalised vecs = cosine sim
         best   = int(np.argmax(scores))
-        return self._names[best], float(scores[best])
+        return names[best], float(scores[best])
+
+    def lookup_topk(self, crop_bgr: np.ndarray, k: int = 5) -> list[tuple[str, float]]:
+        """
+        Like lookup(), but returns up to `k` (class_name, cosine_similarity)
+        matches ordered best-first. Returns [] if the gallery is empty.
+        """
+        with self._lock:
+            matrix, names = self._matrix, self._names
+        if matrix is None or not names:
+            return []
+        emb    = self._embed(crop_bgr)
+        scores = matrix @ emb
+        order  = np.argsort(scores)[::-1][:k]
+        return [(names[i], float(scores[i])) for i in order]

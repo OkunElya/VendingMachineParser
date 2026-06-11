@@ -262,7 +262,8 @@ def build_grid(machine_info, window_points, items) -> GridResult | None:
    
     # --- Column width fixup ---
     try:
-        reference_rows = list(filter(lambda row : len(row) == n_cols+1,row_col_borders))
+        # reference against the widest row found, even if max_cols clamps n_cols below it
+        reference_rows = list(filter(lambda row : len(row) == max(n_cols_per_row)+1,row_col_borders))
         min_val = min([row[0] for row in reference_rows])
         max_val = max([row[-1] for row in reference_rows])
         reference_rows.sort(key=lambda row:abs(min_val - row[0]) + abs(max_val - row[-1]))

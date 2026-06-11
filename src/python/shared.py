@@ -2,9 +2,26 @@ MODEL_PATHES = {
     "machine_detector": "./models/tuned/vending_machine_detect_yolov10n.pt",
     "machine_classificator": "./models/tuned/vending_machine_classification_yolo26n-cls.pt",
     "window_segmentator": "./models/tuned/window_segmentation_yolo26n-seg.pt",
-    "item_detector": "./models/tuned/items_detect.yolo26n-obb.pt",
-    "item_classificator": "",
+    "item_detector": "./models/tuned/items_detect.yolo26n.pt",
+    "item_classificator": "./models/tuned/items_classification_convnext_tiny.fb_in22k_ft_in1k.pt",
 }
+
+ITEM_GALLERY_PATH           = "./models/tuned/items_classification.npy"
+GALLERY_DIR                 = "./gallery"
+ITEM_CLASSIFICATION_BACKBONE = "hf_hub:timm/convnext_tiny.fb_in22k_ft_in1k"
+ITEM_EMBEDDING_SIZE         = 512
+ITEM_INPUT_SIZE             = 224   # encoder was fine-tuned on images padded-to-square then resized to this
+
+# Detection / classification thresholds (shared between pipeline.py and scripts).
+# Where pipeline.py didn't pass an explicit value, the ultralytics default is
+# made explicit here instead.
+MACHINE_DETECTOR_CONF   = 0.3
+MACHINE_DETECTOR_IOU    = 0.5
+MACHINE_CLASSIFIER_CONF = 0.25
+ITEM_DETECTOR_CONF      = 0.35
+ITEM_DETECTOR_IOU       = 0.7   # ultralytics default
+
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 MACHINE_CLASSES = {
     0: {
