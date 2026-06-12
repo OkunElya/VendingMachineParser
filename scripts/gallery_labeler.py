@@ -46,7 +46,7 @@ import threading
 import tkinter as tk
 from dataclasses import dataclass, field
 from pathlib import Path
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 import cv2
 import numpy as np
@@ -431,6 +431,25 @@ class App:
         cv2.imwrite(str(dest), crop)
         return dest
 
+    def _confirm_not_outlier(self, class_name: str, crop: np.ndarray) -> bool:
+        """If `crop`'s embedding is unusually far from `class_name`'s
+        existing gallery mean (more than 2x the typical intra-class spread
+        across the gallery), ask the user to confirm before saving it as a
+        mistake-prevention measure. Returns False if the user cancels."""
+        global_mean = self.product_bank.global_mean_intra_class_distance
+        if global_mean is None or global_mean <= 0:
+            return True
+        emb  = self.product_bank.embed(crop)
+        dist = self.product_bank.class_mean_distance(class_name, emb)
+        if dist is None or dist <= 2 * global_mean:
+            return True
+        return messagebox.askyesno(
+            "Possible mismatch",
+            f"This item looks unusually different from existing '{class_name}' "
+            f"samples (distance {dist:.3f} vs typical {global_mean:.3f}).\n\n"
+            f"Add it to '{class_name}' anyway?",
+        )
+
     def classify_current(self, class_name: str) -> None:
         class_name = class_name.strip()
         if not class_name:
@@ -444,12 +463,17 @@ class App:
 
         item = entry.items[entry.selected]
         crop = crop_from_obb(entry.image, item.obb)
-        item.state = "done"
         if crop is None:
+            item.state = "done"
             self.status_msg = "Empty crop, item skipped."
             self.advance_selection(entry)
             return
 
+        if not self._confirm_not_outlier(class_name, crop):
+            self.status_msg = "Cancelled - item left pending."
+            return
+
+        item.state = "done"
         is_new = class_name not in self.product_bank.class_names
         dest   = self.save_crop(class_name, crop, entry.path, entry.selected)
 
@@ -535,12 +559,16 @@ class App:
 
     def _queue_missing_embeddings(self) -> None:
         """On boot, (re)compute embeddings for any gallery class folder that
-        doesn't have one yet (e.g. added by hand between runs). No-op if the
-        gallery directory is empty/missing or already fully embedded."""
+        doesn't have one yet (e.g. added by hand between runs), or that's
+        missing intra-class spread stats (used by the outlier check below).
+        No-op if the gallery directory is empty/missing or already up to
+        date."""
         if not self.gallery_dir.is_dir():
             return
-        existing = set(self.product_bank.class_names)
-        missing  = {d.name for d in self.gallery_dir.iterdir() if d.is_dir() and d.name not in existing}
+        folders    = {d.name for d in self.gallery_dir.iterdir() if d.is_dir()}
+        existing   = set(self.product_bank.class_names)
+        has_spread = self.product_bank.spread_class_names
+        missing    = (folders - existing) | ((folders & existing) - has_spread)
         self.request_embedding_update(missing)
 
     def request_embedding_update(self, class_names: set[str]) -> None:
