@@ -3,7 +3,10 @@ from __future__ import annotations
 import cv2
 import numpy as np
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pipeline import MachineDetection
 
 # ---------------------------------------------------------------------------
 # Geometry helpers
@@ -45,6 +48,16 @@ def wrap_points(points, corners, out_w, out_h):
     return cv2.perspectiveTransform(pts, M).reshape(-1, 2)
 
 
+def warp_image_inv(img, corners, dst_w, dst_h):
+    """Inverse of warp_image: warp a rectified `img` back into the coordinate
+    space where `corners` describes its quadrilateral, producing a
+    (dst_w, dst_h) image."""
+    h, w = img.shape[:2]
+    src = np.array([[0, 0], [w-1, 0], [w-1, h-1], [0, h-1]], dtype="float32")
+    M = cv2.getPerspectiveTransform(src, corners.astype("float32"))
+    return cv2.warpPerspective(img, M, (dst_w, dst_h))
+
+
 def center_of_obb(obb):
     """Return the (x, y) center of an OBB given in xywhr format."""
     return np.array([float(obb[0]), float(obb[1])])
@@ -79,6 +92,65 @@ def draw_obbs(image, obbs, color=(0, 255, 0), thickness=2):
     for obb in obbs:
         draw_obb(image, obb, color=color, thickness=thickness)
     return image
+
+
+# ---------------------------------------------------------------------------
+# OBB merging helpers
+# ---------------------------------------------------------------------------
+
+def obb_iou(obb1, obb2) -> float:
+    """Exact IoU between two OBBs (xywhr) via convex-polygon intersection."""
+    c1, c2 = obb_xywhr_to_corners(obb1), obb_xywhr_to_corners(obb2)
+    area1, area2 = cv2.contourArea(c1), cv2.contourArea(c2)
+    if area1 <= 0 or area2 <= 0:
+        return 0.0
+    inter_area, _ = cv2.intersectConvexConvex(c1, c2)
+    if inter_area <= 0:
+        return 0.0
+    return float(inter_area / (area1 + area2 - inter_area))
+
+
+def merge_obbs(obbs) -> np.ndarray:
+    """Merge several OBBs (xywhr) into the single rotated rect (xywhr) that
+    tightly encloses all of their corners."""
+    corners = np.concatenate([obb_xywhr_to_corners(o) for o in obbs], axis=0)
+    (cx, cy), (w, h), angle = cv2.minAreaRect(corners)
+    return np.array([cx, cy, w, h, np.radians(angle)], dtype=np.float32)
+
+
+def merge_overlapping_items(items: list, iou_threshold: float = 0.5) -> list:
+    """Merge item OBBs whose pairwise IoU exceeds `iou_threshold` into a single
+    bounding OBB. Items are transitively grouped, so chains of overlapping
+    boxes collapse into one merged box per cluster."""
+    n = len(items)
+    if n <= 1:
+        return items
+
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            i = parent[i]
+        return i
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if obb_iou(items[i]["obb"], items[j]["obb"]) > iou_threshold:
+                ri, rj = find(i), find(j)
+                if ri != rj:
+                    parent[ri] = rj
+
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+
+    merged = []
+    for idxs in groups.values():
+        if len(idxs) == 1:
+            merged.append(items[idxs[0]])
+        else:
+            merged.append({"obb": merge_obbs([items[i]["obb"] for i in idxs])})
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +258,7 @@ def build_grid(machine_info, window_points, items) -> GridResult | None:
 
     # --- Row detection -------------------------------------------------------
     y_span    = float(bottom_ys.max() - bottom_ys.min())
-    threshold = 0.03 * y_span if y_span > 1.0 else 1.0
+    threshold = 0.05 * y_span if y_span > 1.0 else 1.0
 
     sorted_by_y = list(np.argsort(bottom_ys))
     row_groups: list[list[int]] = []
@@ -209,7 +281,20 @@ def build_grid(machine_info, window_points, items) -> GridResult | None:
     # --- Column detection ----------------------------------------------------
     max_cols    = machine_info.get("max_cols", 10)
     bottom_25_n = max(1, N // 4)
-    unit_width  = float(np.sort(warped_widths)[:bottom_25_n].mean())
+    
+    center_point_widths=[]
+    for group in row_groups:
+        row_points = sorted(list([warped_centers[idx] for idx in group]), key = lambda x:x[0])
+        for idx in range(len(row_points)-1):
+            center_point_widths.append(row_points[idx+1]-row_points[idx])
+            
+            
+    max_cols    = machine_info.get("max_cols", 10)
+    bottom_25_n = max(1, N // 4)
+    bottom_10_n = max(1, N // 10)
+    
+    # unit_width  = float(np.sort(warped_widths)[:bottom_25_n].mean())
+    unit_width  = float(np.sort(center_point_widths)[bottom_10_n:bottom_25_n].mean())
     col_spans   = np.maximum(1, np.floor((warped_widths / unit_width)+0.25).astype(int))
     col_of:          np.ndarray       = np.zeros(N, dtype=int)
     n_cols_per_row:  list[int]        = []
@@ -224,15 +309,27 @@ def build_grid(machine_info, window_points, items) -> GridResult | None:
             gap = left_xs[i] - last_right
             if gap > 0.5 * unit_width:
                 # one or more empty cells sit between the previous item and this one
-                gap_cols = max(1, int(round(gap / unit_width)))
-                for g in range(gap_cols):
-                    borders.append(float(last_right + g * gap / gap_cols))
-                col += gap_cols
-            borders.append(float(left_xs[i]))
+                borders.append(float(last_right))
+                col += 1
+                
+            border_x =(left_xs[i]+last_right)/2
+            if gap > 0.5 * unit_width:
+                #after gap use item leftmost point as new border pos
+                border_x=left_xs[i]
+                
+            borders.append(float(border_x))
             col_of[i] = col
-            col += int(col_spans[i])
+            col += 1
             last_right = right_xs[i]
         borders.append(float(right_xs[row_sorted[-1]]))
+        
+        if col >   max_cols:# bad item alignment , ghost item at the beggining
+            offset = col-max_cols 
+            borders = borders[offset:]
+            col-=offset
+            for i in row_sorted:
+                col_of[i]-=offset
+        
         row_col_borders.append(borders)
         n_cols_per_row.append(col)
 
@@ -243,6 +340,27 @@ def build_grid(machine_info, window_points, items) -> GridResult | None:
     for grp in row_groups:
         row_boundaries.append(float(top_ys[grp].min()))
     row_boundaries.append(float(bottom_ys[row_groups[-1]].max()))
+
+
+    reference_rows = list(filter(lambda row : len(row) == max([len(row) for row in row_col_borders]),row_col_borders))
+    min_val = min([row[0] for row in reference_rows])
+    max_val = max([row[-1] for row in reference_rows])
+    reference_rows.sort(key=lambda row:abs(min_val - row[0]) + abs(max_val - row[-1]))
+    
+    ref_row = reference_rows[0] # widest possible row
+
+    for r, grp in enumerate(row_groups):
+        row_sorted = sorted(grp, key=lambda i: left_xs[i])
+        borders    = row_col_borders[r]
+        mapping    = _align_row_borders(borders, ref_row)
+        if mapping is None:
+            continue
+
+        for k,i in enumerate(row_sorted):
+            item_row_idx=col_of[i]
+            col_of[i]= mapping[item_row_idx]
+            col_spans[i]= max(1, mapping[item_row_idx+1]-mapping[item_row_idx])
+
 
     # --- Build GridCell objects -----------------------------------------------
     cells = [
@@ -260,37 +378,7 @@ def build_grid(machine_info, window_points, items) -> GridResult | None:
         for i in range(N)
     ]
    
-    # --- Column width fixup ---
-    try:
-        # reference against the widest row found, even if max_cols clamps n_cols below it
-        reference_rows = list(filter(lambda row : len(row) == max(n_cols_per_row)+1,row_col_borders))
-        min_val = min([row[0] for row in reference_rows])
-        max_val = max([row[-1] for row in reference_rows])
-        reference_rows.sort(key=lambda row:abs(min_val - row[0]) + abs(max_val - row[-1]))
-        
-        ref_row = reference_rows[0] # widest possible row
 
-        for r, grp in enumerate(row_groups):
-            row_sorted = sorted(grp, key=lambda i: left_xs[i])
-            borders    = row_col_borders[r]
-            mapping    = _align_row_borders(borders, ref_row)
-            if mapping is None:
-                continue
-            border_col = dict(zip(borders, mapping))
-            m = len(row_sorted)
-            for k, i in enumerate(row_sorted):
-                left_idx = border_col[float(left_xs[i])]
-                # a cell's right border is shared with the next cell's left border
-                # unless an empty gap separates them (or it's the last cell in the row)
-                if k + 1 < m and (left_xs[row_sorted[k + 1]] - right_xs[i]) <= 0.5 * unit_width:
-                    right_val = float(left_xs[row_sorted[k + 1]])
-                else:
-                    right_val = float(right_xs[i])
-                right_idx = border_col[right_val]
-                cells[i].col      = left_idx
-                cells[i].col_span = max(1, right_idx - left_idx)
-    except Exception as e:
-        print("fixup failed")
         
     # --- 2-D grid allocation -------------------------------------------------
     grid_2d: list[list[int | None]] = [[None] * n_cols for _ in range(n_rows)]
@@ -298,6 +386,7 @@ def build_grid(machine_info, window_points, items) -> GridResult | None:
         for dc in range(cell.col_span):
             if cell.col + dc < n_cols:
                 grid_2d[cell.row][cell.col + dc] = idx
+
 
     return GridResult(
         n_rows=n_rows,
@@ -316,34 +405,68 @@ def build_grid(machine_info, window_points, items) -> GridResult | None:
 # Visualization
 # ---------------------------------------------------------------------------
 
+def _draw_grid_overlay(canvas: np.ndarray, grid: GridResult) -> np.ndarray:
+    """Draw row/column grid lines and cell labels onto `canvas` in-place."""
+    for y in grid.row_boundaries:
+        cv2.line(canvas, (0, int(y)), (grid.out_w, int(y)),
+                 (0, 255, 255), 1, cv2.LINE_AA)
+
+    for r, borders in enumerate(grid.row_col_borders):
+        y_top = int(grid.row_boundaries[r])
+        y_bot = int(grid.row_boundaries[r + 1])
+        for x in borders:
+            cv2.line(canvas, (int(x), y_top), (int(x), y_bot),
+                     (0, 200, 255), 1, cv2.LINE_AA)
+
+    for cell in grid.cells:
+        cx, cy = int(cell.center_warped[0]), int(cell.center_warped[1])
+        cv2.circle(canvas, (cx, cy), 5, (0, 0, 255), -1)
+        label = f"{cell.row},{cell.col}"
+        if cell.col_span > 1:
+            label += f"(×{cell.col_span})"
+        cv2.putText(canvas, label, (cx + 6, cy - 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1, cv2.LINE_AA)
+
+    return canvas
+
+
 def render_grid(machine_image: np.ndarray,
                 window_points: np.ndarray,
                 grid: GridResult) -> np.ndarray:
     """Draw row/column grid lines and cell labels onto the rectified window image."""
     ordered     = order_corners(window_points)
     warped_view = warp_image(machine_image, ordered, grid.out_w, grid.out_h)
+    return _draw_grid_overlay(warped_view, grid)
 
-    for y in grid.row_boundaries:
-        cv2.line(warped_view, (0, int(y)), (grid.out_w, int(y)),
-                 (0, 200, 255), 1, cv2.LINE_AA)
 
-    for r, borders in enumerate(grid.row_col_borders):
-        y_top = int(grid.row_boundaries[r])
-        y_bot = int(grid.row_boundaries[r + 1])
-        for x in borders:
-            cv2.line(warped_view, (int(x), y_top), (int(x), y_bot),
-                     (0, 200, 255), 1, cv2.LINE_AA)
+def render_overlay(detection: MachineDetection) -> np.ndarray:
+    """Render the grid, item OBBs (green), and window outline directly on the
+    (unwarped) machine image, for display in the frontend.
 
-    for cell in grid.cells:
-        cx, cy = int(cell.center_warped[0]), int(cell.center_warped[1])
-        cv2.circle(warped_view, (cx, cy), 5, (0, 0, 255), -1)
-        label = f"{cell.row},{cell.col}"
-        if cell.col_span > 1:
-            label += f"(×{cell.col_span})"
-        cv2.putText(warped_view, label, (cx + 6, cy - 4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1, cv2.LINE_AA)
+    The grid is drawn on a blank rectified canvas and projected back onto the
+    machine image with the inverse of the perspective transform used by
+    `warp_image`/`render_grid`.
+    """
+    overlay = detection.image.copy()
+    h, w    = overlay.shape[:2]
+    ordered = order_corners(detection.window_points)
 
-    return warped_view
+    if detection.grid is not None:
+        grid       = detection.grid
+        grid_layer = np.zeros((grid.out_h, grid.out_w, 3), dtype=np.uint8)
+        _draw_grid_overlay(grid_layer, grid)
+
+        unwarped = warp_image_inv(grid_layer, ordered, w, h)
+        mask     = unwarped.any(axis=2)
+        overlay[mask] = unwarped[mask]
+
+    draw_obbs(overlay, [item["obb"] for item in detection.items], color=(0, 255, 0))
+
+    window_poly = ordered.astype(np.int32).reshape(-1, 1, 2)
+    cv2.polylines(overlay, [window_poly], isClosed=True,
+                  color=(255, 0, 255), thickness=2, lineType=cv2.LINE_AA)
+
+    return overlay
 
 
 def visualize_detection(machine_image: np.ndarray,

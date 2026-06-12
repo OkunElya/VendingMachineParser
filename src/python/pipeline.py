@@ -15,6 +15,7 @@ from shared import (
     MACHINE_CLASSIFIER_CONF,
     ITEM_DETECTOR_CONF,
     ITEM_DETECTOR_IOU,
+    ITEM_MERGE_IOU,
 )
 from window_segmentator import WindowSegmentator
 from grid_helper import (
@@ -23,6 +24,7 @@ from grid_helper import (
     order_corners,
     warp_image,
     build_markdown_table,
+    merge_overlapping_items,
     visualize_detection,
 )
 from item_classification import ProductBank
@@ -96,6 +98,7 @@ class Pipeline:
                 continue
 
             items_list = [{"obb": obb} for obb in self._detect_items(machine_bb_img).cpu()]
+            items_list = merge_overlapping_items(items_list, ITEM_MERGE_IOU)
             grid       = build_grid(MACHINE_CLASSES[machine_class_id], window_points, items_list)
 
             detection = MachineDetection(

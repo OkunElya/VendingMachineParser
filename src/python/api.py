@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 
-from grid_helper import build_markdown_table, render_grid
+from grid_helper import build_markdown_table, render_overlay
 from pipeline import MachineDetection, Pipeline
 from shared import IMAGE_EXTS
 
@@ -47,7 +47,7 @@ pipeline = Pipeline()
 def _serialize_detection(det: MachineDetection) -> dict:
     grid_data = None
     if det.grid is not None:
-        overlay = render_grid(det.image, det.window_points, det.grid)
+        overlay = render_overlay(det)
         ok, buf = cv2.imencode(".jpg", overlay)
         grid_data = {
             "n_rows":   det.grid.n_rows,
