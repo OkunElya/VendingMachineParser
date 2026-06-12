@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 from ultralytics import YOLO
-from shared import MODEL_PATHES 
+from shared import MODEL_PATHES, WINDOW_SEGMENTATOR_IMGSZ
 
 
 def process_mask_matrix(mask_matrix):
@@ -147,8 +147,8 @@ class WindowSegmentator(YOLO):
     def __init__(self):
         super().__init__(MODEL_PATHES["window_segmentator"])
     
-    def getPoly(self,image,conf=0.25):
-        results = self.predict(source=image, conf=conf,retina_masks=True,verbose = False)
+    def getPoly(self,image,conf=0.25,imgsz=WINDOW_SEGMENTATOR_IMGSZ):
+        results = self.predict(source=image, conf=conf,retina_masks=True,verbose = False, imgsz=imgsz)
         result = results[0]
         if result.masks is not None:
             masks_matrices = result.masks.data.cpu().numpy()

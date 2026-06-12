@@ -65,6 +65,7 @@ from shared import (
     MODEL_PATHES,
     ITEM_DETECTOR_CONF,
     ITEM_DETECTOR_IOU,
+    ITEM_DETECTOR_IMGSZ,
     ITEM_MERGE_IOU,
 )
 
@@ -147,11 +148,12 @@ def detect_items(model: YOLO, image_bgr: np.ndarray,
     Return an (N, 5) xywhr array, mirroring Pipeline._detect_items.
 
     Runs at (close to) the image's native resolution -- imgsz is set from
-    the image's longer side so YOLO doesn't downscale it before inference,
-    which keeps small-product crops sharp on high-resolution photos.
+    the image's longer side (floored at ITEM_DETECTOR_IMGSZ) so YOLO doesn't
+    downscale it before inference, which keeps small-product crops sharp on
+    high-resolution photos.
     """
     h, w   = image_bgr.shape[:2]
-    imgsz  = _round_up(max(h, w))
+    imgsz  = max(_round_up(max(h, w)), ITEM_DETECTOR_IMGSZ)
     result = model.predict(image_bgr, verbose=False, conf=conf, iou=iou, imgsz=imgsz)[0]
     if result.obb is not None:
         obbs = result.obb.xywhr

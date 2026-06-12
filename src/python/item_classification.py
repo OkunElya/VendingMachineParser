@@ -1,3 +1,4 @@
+import json
 import math
 import os
 import threading
@@ -91,6 +92,7 @@ class ProductBank:
                  embedding_size: int               = ITEM_EMBEDDING_SIZE,
                  device:         torch.device | None = None):
         self.gallery_path = Path(gallery_path)
+        self.spread_path  = self.gallery_path.with_name(self.gallery_path.stem + "_spread.json")
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self._model = _Encoder(embedding_size).to(self.device)
@@ -102,12 +104,16 @@ class ProductBank:
 
         self._names:  list[str]  | None = None
         self._matrix: np.ndarray | None = None   # (N_classes, embedding_size)
-        # guards _names/_matrix so a background recompute_class() (e.g. run
+        self._spread: dict[str, float]  = {}     # class_name -> mean intra-class cosine distance
+        # guards _names/_matrix/_spread so a background recompute_class() (e.g. run
         # from a worker thread) can't be observed mid-swap by lookup_topk()
         self._lock = threading.RLock()
 
         if self.gallery_path.exists():
             self._load_gallery()
+        if self.spread_path.exists():
+            with open(self.spread_path) as f:
+                self._spread = json.load(f)
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -125,6 +131,18 @@ class ProductBank:
         with self._lock:
             self._names  = names
             self._matrix = matrix
+
+    def _save_spread(self) -> None:
+        self.spread_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.spread_path, "w") as f:
+            json.dump(self._spread, f)
+
+    @staticmethod
+    def _mean_intra_distance(embeddings: list[np.ndarray], mean: np.ndarray) -> float:
+        """Mean cosine distance of each (L2-normalised) embedding to the
+        class's mean embedding direction."""
+        mean_n = mean / max(float(np.linalg.norm(mean)), 1e-12)
+        return float(np.mean([1.0 - float(mean_n @ e) for e in embeddings]))
 
     def _pad_square(self, img_bgr: np.ndarray) -> np.ndarray:
         """Zero-pad a BGR image to a square (centred)."""
@@ -172,14 +190,45 @@ class ProductBank:
             return list(self._names) if self._names else []
 
     def clear_gallery(self) -> None:
-        """Delete the saved embedding gallery (.npy) and reset in-memory
-        state, e.g. when it's found to be stale relative to the gallery
-        directory on disk."""
+        """Delete the saved embedding gallery (.npy and spread cache) and
+        reset in-memory state, e.g. when it's found to be stale relative to
+        the gallery directory on disk."""
         if self.gallery_path.exists():
             self.gallery_path.unlink()
+        if self.spread_path.exists():
+            self.spread_path.unlink()
         with self._lock:
             self._names  = None
             self._matrix = None
+            self._spread = {}
+
+    @property
+    def spread_class_names(self) -> set[str]:
+        """Class names that have mean intra-class distance stats."""
+        with self._lock:
+            return set(self._spread.keys())
+
+    @property
+    def global_mean_intra_class_distance(self) -> float | None:
+        """Mean, across all classes with spread stats, of each class's mean
+        intra-class cosine distance. None if no stats are available yet."""
+        with self._lock:
+            if not self._spread:
+                return None
+            return float(np.mean(list(self._spread.values())))
+
+    def embed(self, crop_bgr: np.ndarray) -> np.ndarray:
+        """Compute the L2-normalised embedding for a product crop."""
+        return self._embed(crop_bgr)
+
+    def class_mean_distance(self, class_name: str, embedding: np.ndarray) -> float | None:
+        """Cosine distance between `embedding` and `class_name`'s stored mean
+        embedding, or None if the class isn't in the gallery yet."""
+        with self._lock:
+            if not self._names or class_name not in self._names:
+                return None
+            mean_vec = self._matrix[self._names.index(class_name)]
+        return float(1.0 - mean_vec @ embedding)
 
     def build_cache(self, gallery_dir: str, item_detector) -> None:
         """
@@ -210,11 +259,14 @@ class ProductBank:
                 embeddings.append(self._embed(crop))
 
             if embeddings:
-                gallery_data[class_dir.name] = np.mean(embeddings, axis=0)
+                mean = np.mean(embeddings, axis=0)
+                gallery_data[class_dir.name] = mean
+                self._spread[class_dir.name] = self._mean_intra_distance(embeddings, mean)
                 print(f"  [{len(embeddings):3d}] {class_dir.name}")
 
         self.gallery_path.parent.mkdir(parents=True, exist_ok=True)
         np.save(str(self.gallery_path), gallery_data, allow_pickle=True)
+        self._save_spread()
         self._load_gallery()
         print(f"Gallery saved → {self.gallery_path}  ({len(gallery_data)} classes)")
 
@@ -252,13 +304,16 @@ class ProductBank:
         if not embeddings:
             return False
 
+        mean = np.mean(embeddings, axis=0).astype(np.float32)
         data: dict[str, np.ndarray] = {}
         if self.gallery_path.exists():
             data = np.load(self.gallery_path, allow_pickle=True).item()
-        data[class_name] = np.mean(embeddings, axis=0).astype(np.float32)
+        data[class_name] = mean
+        self._spread[class_name] = self._mean_intra_distance(embeddings, mean)
 
         self.gallery_path.parent.mkdir(parents=True, exist_ok=True)
         np.save(str(self.gallery_path), data, allow_pickle=True)
+        self._save_spread()
         self._load_gallery()
         return True
 

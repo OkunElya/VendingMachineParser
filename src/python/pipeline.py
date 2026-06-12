@@ -12,9 +12,12 @@ from shared import (
     MACHINE_CLASSES,
     MACHINE_DETECTOR_CONF,
     MACHINE_DETECTOR_IOU,
+    MACHINE_DETECTOR_IMGSZ,
     MACHINE_CLASSIFIER_CONF,
+    MACHINE_CLASSIFIER_IMGSZ,
     ITEM_DETECTOR_CONF,
     ITEM_DETECTOR_IOU,
+    ITEM_DETECTOR_IMGSZ,
     ITEM_MERGE_IOU,
 )
 from window_segmentator import WindowSegmentator
@@ -48,10 +51,10 @@ class Pipeline:
         self.product_bank          = ProductBank()
 
     def _detect_machines(self, image):
-        return self.machine_detector.predict(image, verbose=False, conf=MACHINE_DETECTOR_CONF, iou=MACHINE_DETECTOR_IOU)[0].boxes.xyxy
+        return self.machine_detector.predict(image, verbose=False, conf=MACHINE_DETECTOR_CONF, iou=MACHINE_DETECTOR_IOU, imgsz=MACHINE_DETECTOR_IMGSZ)[0].boxes.xyxy
 
     def _get_machine_classification(self, machine_image):
-        result = self.machine_classificator.predict(machine_image, verbose=False, conf=MACHINE_CLASSIFIER_CONF)[0]
+        result = self.machine_classificator.predict(machine_image, verbose=False, conf=MACHINE_CLASSIFIER_CONF, imgsz=MACHINE_CLASSIFIER_IMGSZ)[0]
         probs  = result.probs.data
         print(probs)
         return torch.argmax(probs).item()
@@ -60,7 +63,7 @@ class Pipeline:
         return self.window_segmentator.getPoly(image)
 
     def _detect_items(self, image):
-        result = self.item_detector.predict(image, verbose=False, conf=ITEM_DETECTOR_CONF, iou=ITEM_DETECTOR_IOU)[0]
+        result = self.item_detector.predict(image, verbose=False, conf=ITEM_DETECTOR_CONF, iou=ITEM_DETECTOR_IOU, imgsz=ITEM_DETECTOR_IMGSZ)[0]
         if result.obb is not None:
             return result.obb.xywhr
         # plain bbox model: pad xywh with a zero rotation column so downstream
