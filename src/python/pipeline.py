@@ -21,8 +21,7 @@ from window_segmentator import WindowSegmentator
 from grid_helper import (
     GridResult,
     build_grid,
-    order_corners,
-    warp_image,
+    crop_obb_rotated,
     build_markdown_table,
     merge_overlapping_items,
     visualize_detection,
@@ -70,15 +69,8 @@ class Pipeline:
         return torch.cat([boxes, torch.zeros((boxes.shape[0], 1), device=boxes.device)], dim=1)
 
     def _classify_items(self, detection: MachineDetection) -> None:
-        grid    = detection.grid
-        ordered = order_corners(detection.window_points)
-        warped  = warp_image(detection.image, ordered, grid.out_w, grid.out_h)
-        for cell in grid.cells:
-            y0   = max(0, int(cell.top_y))
-            y1   = min(grid.out_h, int(cell.bottom_y))
-            x0   = max(0, int(cell.left_x))
-            x1   = min(grid.out_w, int(cell.right_x))
-            crop = warped[y0:y1, x0:x1]
+        for cell in detection.grid.cells:
+            crop = crop_obb_rotated(detection.image, cell.obb)
             if crop.size > 0:
                 cell.product_name, cell.product_score = self.product_bank.lookup(crop)
             else:

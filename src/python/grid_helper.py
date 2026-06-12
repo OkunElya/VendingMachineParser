@@ -79,6 +79,44 @@ def obb_xywhr_to_corners(obb):
     return np.stack([cx, cy], axis=1).astype(np.float32)
 
 
+# ---------------------------------------------------------------------------
+# OBB cropping helpers
+# ---------------------------------------------------------------------------
+
+def crop_obb_rotated(image: np.ndarray, obb, pad_square: bool = True) -> np.ndarray:
+    """Crop the region covered by an OBB (xywhr, r in radians), rotating the
+    image about the OBB's center so its w/h axes become axis-aligned (i.e.
+    de-skewing it), then slicing out the (w, h) box. Areas falling outside
+    the source image are zero-filled. When `pad_square` is set, the result
+    is further zero-padded to a square (centred) for the embedding network.
+    """
+    x, y, w, h, r = float(obb[0]), float(obb[1]), float(obb[2]), float(obb[3]), float(obb[4])
+    img_h, img_w = image.shape[:2]
+
+    M       = cv2.getRotationMatrix2D((x, y), np.degrees(r), 1.0)
+    rotated = cv2.warpAffine(image, M, (img_w, img_h), flags=cv2.INTER_LINEAR)
+
+    w_i, h_i = max(1, int(round(w))), max(1, int(round(h)))
+    x0, y0   = int(round(x - w_i / 2)), int(round(y - h_i / 2))
+
+    crop = np.zeros((h_i, w_i) + image.shape[2:], dtype=image.dtype)
+    sx0, sy0 = max(0, x0), max(0, y0)
+    sx1, sy1 = min(img_w, x0 + w_i), min(img_h, y0 + h_i)
+    if sx1 > sx0 and sy1 > sy0:
+        dx0, dy0 = sx0 - x0, sy0 - y0
+        crop[dy0:dy0 + (sy1 - sy0), dx0:dx0 + (sx1 - sx0)] = rotated[sy0:sy1, sx0:sx1]
+
+    if pad_square:
+        side  = max(crop.shape[0], crop.shape[1])
+        pad_t = (side - crop.shape[0]) // 2
+        pad_b = side - crop.shape[0] - pad_t
+        pad_l = (side - crop.shape[1]) // 2
+        pad_r = side - crop.shape[1] - pad_l
+        crop  = cv2.copyMakeBorder(crop, pad_t, pad_b, pad_l, pad_r, cv2.BORDER_CONSTANT, value=0)
+
+    return crop
+
+
 def draw_obb(image, obb, color=(0, 255, 0), thickness=2):
     """Draw a single OBB (xywhr) on image in-place."""
     corners = obb_xywhr_to_corners(obb).astype(np.int32).reshape(-1, 1, 2)

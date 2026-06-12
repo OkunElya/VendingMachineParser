@@ -146,19 +146,15 @@ class ProductBank:
             return self._model(tensor).cpu().numpy().flatten()
 
     def _crop_largest_obb(self, img: np.ndarray, item_detector) -> np.ndarray:
-        """Run detector and return an axis-aligned crop of the largest OBB."""
-        from grid_helper import obb_xywhr_to_corners
+        """Run detector and return a rotation-corrected, square-padded crop
+        of the largest OBB."""
+        from grid_helper import crop_obb_rotated
         try:
             obbs = item_detector(img)
             if obbs is not None and len(obbs):
                 areas = [float(o[2]) * float(o[3]) for o in obbs]
                 best  = obbs[int(np.argmax(areas))]
-                pts   = obb_xywhr_to_corners(best)
-                x0 = max(0, int(pts[:, 0].min()))
-                y0 = max(0, int(pts[:, 1].min()))
-                x1 = min(img.shape[1], int(pts[:, 0].max()))
-                y1 = min(img.shape[0], int(pts[:, 1].max()))
-                crop = img[y0:y1, x0:x1]
+                crop  = crop_obb_rotated(img, best)
                 if crop.size > 0:
                     return crop
         except Exception:
@@ -174,6 +170,16 @@ class ProductBank:
         """All class names currently loaded in the gallery."""
         with self._lock:
             return list(self._names) if self._names else []
+
+    def clear_gallery(self) -> None:
+        """Delete the saved embedding gallery (.npy) and reset in-memory
+        state, e.g. when it's found to be stale relative to the gallery
+        directory on disk."""
+        if self.gallery_path.exists():
+            self.gallery_path.unlink()
+        with self._lock:
+            self._names  = None
+            self._matrix = None
 
     def build_cache(self, gallery_dir: str, item_detector) -> None:
         """

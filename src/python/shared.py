@@ -18,8 +18,8 @@ ITEM_INPUT_SIZE             = 224   # encoder was fine-tuned on images padded-to
 MACHINE_DETECTOR_CONF   = 0.3
 MACHINE_DETECTOR_IOU    = 0.5
 MACHINE_CLASSIFIER_CONF = 0.25
-ITEM_DETECTOR_CONF      = 0.3
-ITEM_DETECTOR_IOU       = 0.5
+ITEM_DETECTOR_CONF      = 0.2
+ITEM_DETECTOR_IOU       = 0.7
 ITEM_MERGE_IOU          = 0.3
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}

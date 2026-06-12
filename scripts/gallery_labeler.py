@@ -57,7 +57,7 @@ from ultralytics import YOLO
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src" / "python"))
 
-from grid_helper import draw_obb, obb_xywhr_to_corners
+from grid_helper import crop_obb_rotated, draw_obb, merge_overlapping_items
 from item_classification import ProductBank
 from shared import (
     GALLERY_DIR,
@@ -65,6 +65,7 @@ from shared import (
     MODEL_PATHES,
     ITEM_DETECTOR_CONF,
     ITEM_DETECTOR_IOU,
+    ITEM_MERGE_IOU,
 )
 
 # ---------------------------------------------------------------------------
@@ -169,15 +170,8 @@ def order_reading(obbs: np.ndarray, image_h: int) -> list[int]:
 
 
 def crop_from_obb(image: np.ndarray, obb: np.ndarray) -> np.ndarray | None:
-    corners = obb_xywhr_to_corners(obb)
-    h, w    = image.shape[:2]
-    x0 = max(0, int(np.floor(corners[:, 0].min())))
-    y0 = max(0, int(np.floor(corners[:, 1].min())))
-    x1 = min(w, int(np.ceil(corners[:, 0].max())))
-    y1 = min(h, int(np.ceil(corners[:, 1].max())))
-    if x1 <= x0 or y1 <= y0:
-        return None
-    return image[y0:y1, x0:x1].copy()
+    crop = crop_obb_rotated(image, obb)
+    return crop if crop.size > 0 else None
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +284,7 @@ class App:
         self._build_widgets()
 
         self.root.bind("<KeyPress>", self.on_key)
+        self._check_gallery_sync()
         self._queue_missing_embeddings()
         self.render_main()
         self.root.after(150, self.poll_updates)
@@ -340,8 +335,10 @@ class App:
             entry.items = []
             return
         entry.image = img
-        obbs  = self.item_detector_fn(img)
-        order = order_reading(obbs, img.shape[0])
+        obbs   = self.item_detector_fn(img)
+        merged = merge_overlapping_items([{"obb": obb} for obb in obbs], ITEM_MERGE_IOU)
+        obbs   = [m["obb"] for m in merged]
+        order  = order_reading(obbs, img.shape[0])
         entry.items    = [ItemEntry(obb=obbs[i]) for i in order]
         entry.selected = 0 if entry.items else -1
 
@@ -514,6 +511,27 @@ class App:
         self.advance_selection(entry)
 
     # -- background embedding updates ------------------------------------------------
+
+    def _check_gallery_sync(self) -> None:
+        """Print a warning at startup if the embedding count stored in the
+        gallery .npy doesn't match the number of class folders on disk."""
+        if not self.gallery_dir.is_dir():
+            return
+        folder_classes   = {d.name for d in self.gallery_dir.iterdir() if d.is_dir()}
+        embedded_classes = set(self.product_bank.class_names)
+        if len(folder_classes) == len(embedded_classes):
+            return
+
+        print(f"[gallery] WARNING: {len(embedded_classes)} embedded classes "
+              f"!= {len(folder_classes)} gallery folders")
+        missing  = folder_classes - embedded_classes
+        orphaned = embedded_classes - folder_classes
+        if missing:
+            print(f"  missing embeddings ({len(missing)}): {sorted(missing)}")
+        if orphaned:
+            print(f"  orphaned embeddings ({len(orphaned)}): {sorted(orphaned)}")
+            print(f"  deleting stale gallery cache: {self.product_bank.gallery_path}")
+            self.product_bank.clear_gallery()
 
     def _queue_missing_embeddings(self) -> None:
         """On boot, (re)compute embeddings for any gallery class folder that
