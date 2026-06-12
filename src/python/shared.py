@@ -2,7 +2,7 @@ MODEL_PATHES = {
     "machine_detector": "./models/tuned/vending_machine_detect_yolov10n.pt",
     "machine_classificator": "./models/tuned/vending_machine_classification_yolo26n-cls.pt",
     "window_segmentator": "./models/tuned/window_segmentation_yolo26n-seg.pt",
-    "item_detector": "/home/potata/.pyenv/runs/obb/train-6/weights/best.pt",# "./models/tuned/items_detect.yolo26-s00b.pt",
+    "item_detector": "./models/tuned/items_detect.yolo26s-obb.pt",
     "item_classificator": "./models/tuned/items_classification_convnext_tiny.fb_in22k_ft_in1k.pt",
 }
 
