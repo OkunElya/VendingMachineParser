@@ -44,33 +44,57 @@ models over one end-to-end network.
    │ (grid_helper.warp_image)4 corners remain (falls back to convex-hull area
    ▼                          reduction if it can't converge)
 ┌─────────────────────────┐
-│ 4. Item detector        │  YOLO26n-obb (oriented bounding boxes)
-│    → product OBBs       │  finds every product on the shelves, rotation-
-└─────────────────────────┘  aware so angled shots still yield tight boxes
-   │
+│ 4. Item detector        │  YOLO26s-obb (oriented bounding boxes), run only
+│    → product OBBs       │  inside the rectified window's bounding rect
+└─────────────────────────┘  (grid_helper.mask_to_polygon / offset_obb crop
+   │                          everything else out before detection, then map
+   │                          results back to photo coordinates)
+   ▼
+┌─────────────────────────┐
+│ 4b. OBB merge           │  grid_helper.merge_overlapping_items — union-find
+│    → deduplicated OBBs  │  over pairwise rotated IoU (ITEM_MERGE_IOU), plus a
+└─────────────────────────┘  containment pre-pass (ITEM_MERGE_CONTAINMENT) that
+   │                          drops any box almost entirely covered by a
+   │                          larger one (duplicate sub-detections)
    ▼
 ┌─────────────────────────┐
 │ 5. Grid builder         │  grid_helper.build_grid — pure geometry, no model:
 │    → rows/cols/cells    │  warps OBB corners into rectified window space,
 └─────────────────────────┘  clusters items into rows by warped bottom-Y
-   │                          (within 3% of the row span), derives a column
-   │                          "unit width" from the narrowest 25% of items and
-   │                          assigns each item floor(width/unit) column slots
-   ▼
+   │                          (within 5% of the row span), derives a column
+   │                          "unit width" per row from the 10th-25th
+   │                          percentile of gaps between item centers, assigns
+   │                          each item floor(width/unit) column slots, and
+   ▼                          aligns each row's borders to a reference row via DP
 ┌─────────────────────────┐
 │ 6. Item classifier      │  ConvNeXt-Tiny embedding encoder (ArcFace-trained)
 │    → product name+score │  + cosine-similarity lookup against a per-class
 └─────────────────────────┘  averaged-embedding gallery (item_classification.py
-                             / ProductBank). Each grid cell is cropped from the
-                             rectified image and matched to the nearest class.
+                             / ProductBank). Each grid cell's OBB is cropped
+                             directly from the *original* photo via
+                             crop_obb_rotated — de-skewed by its rotation
+                             angle, canonicalized to landscape, and padded to
+                             a square with black (matching how the training
+                             crops are built) — then matched to the nearest
+                             class.
 ```
 
-The end result is a `GridResult` (rows, columns, per-cell product name +
-similarity score) that can be rendered back onto the rectified image
-(`render_grid`) or exported as a Markdown table (`build_markdown_table`) —
-this is what the API and web app return to the client.
+All numeric thresholds along this chain — detector confidences/IoUs, the
+merge IoU/containment ratios, and the per-model `imgsz` passed to each YOLO
+model — live in a single `Config` dataclass (`shared.py`), persisted to
+`config.json`. They can be tuned live, on a real photo, with
+`scripts/tune_item_detector.py` (a slider UI that re-runs detection + merging
+on every change and saves accepted values back to `config.json`) without
+touching any source file.
 
-![Computed grid — rectified shelf with per-cell product matches and similarity scores](screenshots/computed_table.png)
+The end result is a `GridResult` (rows, columns, per-cell product name +
+similarity score) that can be rendered back onto the original photo —
+overlaid with the window outline, individual item boxes, and the grid lines/
+labels (`render_overlay`) — or exported as a Markdown table
+(`build_markdown_table`); this is what the API and web app return to the
+client.
+
+![Recognition result — grid overlaid on the original photo via the inverse perspective warp](screenshots/parsed_vending%20machine.png)
 
 ---
 
@@ -95,18 +119,46 @@ the helper tools in `scripts/`:
   padding every image to a square canvas (centered, black background) and
   resizing — the same preprocessing the classification/embedding models expect
   at inference time, so train and serve paths match.
-- **`scripts/delete_trash_images.py`** — scans a dataset for corrupted/
-  truncated image files (deep byte-level verification via Pillow, not just
-  header checks) so a single bad JPEG doesn't crash a long training run.
+- **`scripts/verify_and_resave_images.py`** — multiprocessed OpenCV pass that
+  re-encodes every image in a dataset (fixing truncated/corrupt JPEG bytes in
+  place) and actively deletes any image — plus its matching label file — that
+  fails to load or has an implausible size/channel count. Supersedes the
+  earlier Pillow-based `delete_trash_images.py`, which only reported problems.
+- **`scripts/gallery_labeler.py`** — the main tool for building/extending the
+  product gallery. It runs the *same* `Pipeline.detect(..., classify=False)`
+  used in production (machine detect → classify → window segment → item
+  detect masked to the window) over a folder of source photos, shows each
+  detected crop next to a fuzzy-search/top-5-suggestions panel, and lets you
+  accept or correct the label with a few keystrokes. Embeddings are updated
+  **incrementally** — `ProductBank.recompute_class()` re-embeds only the
+  class(es) that just received new samples — so the gallery can grow without
+  a full rebuild. It also runs a startup sync check between
+  `gallery/<class>/` folders and the saved embedding matrix, and pops a
+  confirmation dialog if a newly-labeled crop's embedding is an outlier
+  relative to its class (more than 2× the global mean intra-class distance) —
+  a guard against fat-finger mislabels silently corrupting a class's averaged
+  embedding.
 
-The **product gallery** (`gallery/<product_name>/*.jpg`) is a small reference
-set of clean product photos (e.g. `cola_03`, `snickers`, `twix`, `lays`,
-`mnms`, `pepero`, `bonaqua`, `dobry_cola_05`). `notebooks/build_library.ipynb`
-walks this folder, runs the item detector on each image, crops the largest
-detected OBB, embeds it with the fine-tuned ConvNeXt encoder, **averages all
-embeddings per class**, and saves the resulting matrix to
-`models/tuned/items_classification.npy` — this is the reference bank
-`ProductBank.lookup()` matches crops against at inference time.
+The custom datasets started small and have grown substantially through
+repeated rounds of phone-photo capture and labeling with the tools above —
+`vending_machine_detection`, `vending_machine_classification`, and
+`window_segmentation` each now hold several hundred labeled images split
+80/10/10 (or close to it) across train/val/test, which is enough to run full
+training passes for the machine detector, machine classifier, and window
+segmentator rather than just smoke-testing them.
+
+![New training photo — recently captured and labeled for the vending-machine detection dataset](screenshots/new_training_photo.jpg)
+
+The **product gallery** (`gallery/<product_name>/*.png`) is a small reference
+set of clean product crops (e.g. `cola_03`, `snickers`, `twix`, `lays`,
+`mnms`, `pepero`, `bonaqua`, `dobry_cola_05`), maintained with
+`scripts/gallery_labeler.py` above. Each crop is rotation-corrected and
+square-padded with `crop_obb_rotated` (the same function used at inference
+time), embedded with the fine-tuned ConvNeXt encoder, **averaged per class**,
+and the resulting matrix is saved to `models/tuned/items_classification.npy`
+— this is the reference bank `ProductBank.lookup()` matches crops against at
+inference time. (The original `build_library.ipynb` notebook that performed a
+one-shot full rebuild has been retired in favour of this incremental tool.)
 
 ![image_labeler.py classification UI — bucketing vending machine photos by model](screenshots/image_labeler.png)
 ---
@@ -117,18 +169,23 @@ Hand-labelling enough vending-machine photos to train an item *detector* from
 scratch isn't realistic, so the project leans on two public datasets and
 adapts them to this task's label format and domain:
 
-- **SKU-110K** (`datasets/SKU110K_fixed/`) — a large public retail-shelf
-  detection dataset (densely packed products on store shelves). Its CSV
-  annotations are converted to Ultralytics OBB label format by
-  `scripts/sku_to_ultralytics_format.py` (per-split CSV → per-image `.txt`
-  label files), and corrupted images are pruned with
-  `delete_trash_images.py`. This gives the **item detector** (YOLO26n-obb,
-  trained in `notebooks/learn_item_detector.ipynb`) a large, diverse base of
-  "many small rectangular products on shelves" to learn from — a domain close
-  enough to vending-machine windows to transfer well, even though none of the
-  source images are vending machines.
+- **SKU-110K-R** (`datasets/SKU110K_fixed/`) — a large public retail-shelf
+  detection dataset (densely packed products on store shelves), now used via
+  its **rotated-box (SKU110K-R) annotations** rather than the original
+  axis-aligned CSVs. `DRN_CVPR2020/rotate_augment.py` generates rotated
+  copies of every source image plus matching oriented boxes
+  (`rbbox=[cx,cy,w,h,angle]`); `scripts/sku110k_r_to_ultralytics_format.py`
+  converts these into one Ultralytics OBB `.txt` label per image
+  (train/val/test ≈ 57.5k/4.1k/20.6k images, all with real oriented labels —
+  previously only the *original*, non-rotated images had labels at all).
+  Combined with corrupted-image pruning (`verify_and_resave_images.py`), this
+  gives the **item detector** (YOLO26s-obb, trained in
+  `notebooks/learn_item_detector.ipynb`) a large, diverse, and now fully
+  *rotation-labeled* base of "many small rectangular products on shelves" to
+  learn from — a domain close enough to vending-machine windows to transfer
+  well, even though none of the source images are vending machines.
 - **Retail-YU** (`datasets/Retail-YU_reformed/`) — a retail product-recognition
-  dataset, reorganized into an `ImageFolder`/gallery layout
+  dataset (~104k images), reorganized into an `ImageFolder`/gallery layout
   (`train/`, `val/`, `gallery/`). It is the training data for the **item
   classification embedding model** (`notebooks/learn_item_classification.ipynb`):
   a ConvNeXt-Tiny backbone pretrained on ImageNet-22k→1k
@@ -139,10 +196,40 @@ adapts them to this task's label format and domain:
   was used to pull bounding-box crops out of detection-style datasets when
   building/augmenting classification training data this way.
 
+Between the two public datasets (SKU110K-R ≈ 82k images, Retail-YU ≈ 104k
+images) and the now-several-hundred-image custom datasets, every one of the
+five fine-tuned models has enough data behind it to support a full training
+run rather than a quick proof-of-concept fit.
+
+### Spring/auger occlusion augmentation
+
+Many real vending machines use rotating spring/auger coils to dispense
+products, and these coils visually occlude part of the product as a wide arc
+in front of the shelf — something neither public dataset contains examples
+of. `src/python/spring_augment.py` addresses this with a procedural
+augmentation: 18 photographed spring/auger textures on transparent
+backgrounds (`datasets/aug_springs/`) are each unwrapped to polar coordinates
+once at load time to find their "valid arc span" (excluding the gap where the
+coil isn't a full ring), and `random_patch()` then cuts a random sub-arc
+(180°–270°) out of the *original* (unwarped) texture via a `cv2.ellipse`
+sector mask — no resampling/distortion of the texture.
+
+This is applied two ways: `SpringOcclusionPIL(p=0.3)` as a torchvision
+transform on item-classification training crops, and a bbox-anchored
+`SpringOcclusion` Ultralytics dataset transform on item-detector training
+images — the latter picks a `coverage`-fraction of the ground-truth boxes per
+image and overlays a patch sized relative to each target box, so occlusions
+land on real products rather than at random image positions.
+
+![Spring/auger occlusion texture — one of 18 source images used by `spring_augment.py`](screenshots/spring_texture_1.png)
+![Spring/auger occlusion texture — a second example, showing the curved coil shape](screenshots/spring_texture_2.png)
+
 In short: public shelf-detection and retail-recognition datasets supply the
 visual *vocabulary* (what a packaged product looks like, in bulk and up close);
 the small custom datasets supply the *task-specific geometry* (what this
-specific machine and its window look like).
+specific machine and its window look like); and the procedural spring
+augmentation injects a vending-machine-specific occlusion pattern that
+neither public dataset has any examples of.
 
 ---
 
@@ -154,16 +241,25 @@ checkpoints are written to `models/tuned/` (paths wired up centrally in
 
 | Stage | Base checkpoint | Tuned checkpoint | Notebook | Trained on |
 |---|---|---|---|---|
-| Machine detector | `yolov10n.pt` | `vending_machine_detect_yolov10n.pt` | `learn_vending_machine_detector.ipynb` | `vending_machine_detection` (custom) |
+| Machine detector | `yolov10n.pt` | `vending_machine_detect_yolov10n.pt` | `learn_vending_machine_detector.ipynb` | `vending_machine_detection` (custom, aggressive Albumentations augmentation) |
 | Machine classifier | `yolo26n-cls.pt` | `vending_machine_classification_yolo26n-cls.pt` | `learn_vending_machine_classification.ipynb` | `vending_machine_classification` (custom) |
-| Window segmentator | `yolo26n-seg.pt` | `window_segmentation_yolo26n-seg.pt` | `learn_window_segmentation.ipynb` | `window_segmentation` (custom, trained with rotation/flip/mosaic augmentation) |
-| Item detector | `yolo26n-obb.pt` | `items_detect.yolo26n-obb.pt` | `learn_item_detector.ipynb` | `SKU110K_fixed` (public, adapted to OBB) |
-| Item embedding encoder | ConvNeXt-Tiny `timm/convnext_tiny.fb_in22k_ft_in1k` (ImageNet) | `items_classification_convnext_tiny.fb_in22k_ft_in1k.pt` (+ ArcFace head) | `learn_item_classification.ipynb` | `Retail-YU_reformed` (public, reformatted) |
-| Product gallery | — | `items_classification.npy` (averaged per-class embeddings) | `build_library.ipynb` | `gallery/` (custom reference photos) |
+| Window segmentator | `yolo26n-seg.pt` | `window_segmentation_yolo26n-seg.pt` | `learn_window_segmentation.ipynb` | `window_segmentation` (custom, trained with rotation/flip/mosaic + Albumentations augmentation) |
+| Item detector | `yolo26s-obb.pt` | `items_detect_yolo26s-obb.pt` | `learn_item_detector.ipynb` | `SKU110K_fixed` (SKU110K-R, OBB labels for original + rotated images, plus spring/auger occlusion augmentation) |
+| Item embedding encoder | ConvNeXt-Tiny `timm/convnext_tiny.fb_in22k_ft_in1k` (ImageNet) | `items_classification_convnext_tiny.fb_in22k_ft_in1k.pt` (+ ArcFace head) | `learn_item_classification.ipynb` | `Retail-YU_reformed` (public, reformatted, with 0/90/180/270° rotation + spring-occlusion augmentation) |
+| Product gallery | — | `items_classification.npy` (+ `items_classification_spread.json`, normalized averaged per-class embeddings) | `scripts/gallery_labeler.py` | `gallery/` (custom reference crops, rotation-corrected + black-padded via `crop_obb_rotated`) |
 
 `models/base/` also contains a couple of checkpoints (`yolo11n.pt`,
 `yolo26n.pt`) kept around for experimentation that aren't currently wired
 into the pipeline.
+
+Every fine-tuned model and the gallery embeddings have gone through at least
+one retraining/rebuild pass since the table above first stabilized, each
+pass fixing a real train/inference mismatch: embedding-gallery
+centroids are now L2-normalized before the cosine-similarity lookup, item
+crops are rotation-de-skewed (`crop_obb_rotated`) instead of taking an
+axis-aligned box around a rotated OBB, and both training and inference now
+pad crops to square with **black** (matching `ProductBank`'s
+`_pad_square`) instead of the edge-mean color an earlier revision used.
 
 ---
 
@@ -182,7 +278,11 @@ that:
    drawn on it (returned as base64 JPEG), plus an HTML table built from the
    structured per-cell data — each cell shows the recognized product name,
    similarity score, and a reference thumbnail fetched from
-   `GET /products/{name}/image`.
+   `GET /products/{name}/image`. The table can have a dozen-plus columns
+   (one per grid column, e.g. C0–C11 for the wide machines), so it is wrapped
+   in a `.table-wrapper` element with `overflow-x: auto` — it scrolls
+   horizontally inside its bordered section instead of bleeding past the
+   page edge on narrow/mobile screens.
 
 It is **served by the FastAPI/uvicorn process itself** (`api.py` mounts
 `web/dist` as static files), so frontend and API share one origin — no CORS
@@ -193,7 +293,7 @@ frontend-specific build/dev instructions.
 
 ![Web app — camera capture screen](screenshots/webapp_camera_ui.png)
 
-![Web app — recognition result with rectified grid and product table](screenshots/recognition%20result.png)
+![Web app — recognition result table, horizontally scrollable for wide machines](screenshots/table_for_parsed_nachine.png)
 
 ---
 
@@ -258,11 +358,16 @@ matching the folder names referenced by the notebooks and `*.yaml` files:
 | Vending machine classification (custom) | `datasets/vending_machine_classification/` | 📁 **Placeholder — Google Drive link**: `<TODO: insert shared Google Drive folder URL here>` |
 | Window segmentation (custom) | `datasets/window_segmentation/` | 📁 **Placeholder — Google Drive link**: `<TODO: insert shared Google Drive folder URL here>` |
 | Product gallery (custom reference photos) | `gallery/` | 📁 **Placeholder — Google Drive link**: `<TODO: insert shared Google Drive folder URL here>` |
-| SKU-110K (public, reformatted to OBB) | `datasets/SKU110K_fixed/` | 📁 **Placeholder — Google Drive link** (preprocessed copy): `<TODO: insert shared Google Drive folder URL here>` — original: https://github.com/eg4000/SKU110K_CVPR19 |
-| Retail-YU (public, reformatted) | `datasets/Retail-YU_reformed/` | 📁 **Placeholder — Google Drive link** (preprocessed copy): `<TODO: insert shared Google Drive folder URL here>` |
+| SKU-110K-R (public, reformatted to oriented (OBB) boxes) | `datasets/SKU110K_fixed/` | 📁 **Placeholder — Google Drive link** (preprocessed copy, ~82k train/val/test images): `<TODO: insert shared Google Drive folder URL here>` — original: https://github.com/eg4000/SKU110K_CVPR19 |
+| Retail-YU (public, reformatted) | `datasets/Retail-YU_reformed/` | 📁 **Placeholder — Google Drive link** (preprocessed copy, ~104k images): `<TODO: insert shared Google Drive folder URL here>` |
 
 > Replace each `<TODO: ...>` with the actual shared Drive link before sharing
 > this report externally.
+
+At this point the dataset sizes are sufficient for full training runs of
+all five fine-tuned models, not just quick proof-of-concept fits — see
+**§3 Adapting global / public datasets** above for the SKU-110K-R/Retail-YU
+counts and **§2 Custom dataset creation** for the custom datasets' size.
 
 If you'd rather rebuild a dataset from scratch instead of downloading it,
 the relevant tool from `scripts/` (see **§2 Custom dataset creation** above)
@@ -284,8 +389,14 @@ Pretrained/fine-tuned checkpoints (`models/base/`, `models/tuned/`,
   3. `learn_window_segmentation.ipynb`
   4. `learn_item_detector.ipynb`
   5. `learn_item_classification.ipynb`
-  6. `build_library.ipynb` (depends on 4 and 5 — builds the product gallery
-     embeddings from `gallery/`)
+  6. `scripts/gallery_labeler.py` (depends on 4 and 5 — labels reference crops
+     into `gallery/<product_name>/` and incrementally builds the product
+     gallery embeddings; the older `build_library.ipynb` notebook has been
+     retired)
+
+After (or instead of) retraining, detection/merge thresholds can be
+re-tuned interactively with `scripts/tune_item_detector.py`, which writes
+its results to `config.json` (read by `shared.Config` at startup).
 
 ### 5. Configure access tokens
 
@@ -332,23 +443,38 @@ the camera web app (camera access requires `https://` or `localhost`).
 
 ## Further work
 
-- **Grow the custom dataset.** The window-segmentation model fails fairly
-  often on real-world shots — odd viewing angles, reflections/glare on the
-  glass, partial occlusion, and lighting variation all trip it up, which then
-  cascades into a failed perspective warp and a skipped detection
-  (`pipeline.py` simply logs `"failed to segment window"` and moves on).
-  More varied, harder examples in `window_segmentation` (and likely
-  `vending_machine_detection`/`vending_machine_classification` too) should
-  meaningfully improve robustness.
-- **Fine-tune the embedding model further.** The product-classification
-  embedding model (ConvNeXt-Tiny + ArcFace) currently produces fairly weak
-  separation between classes — cosine-similarity scores on real grids often
-  sit close to zero and sometimes pick the wrong product (see the sample
-  output in `workspace/temp.md`, where many cells are confidently mislabeled
-  between e.g. `cocacola` and `snickers`). A larger/cleaner training set,
-  more aggressive augmentation matching real capture conditions (angle,
-  lighting, partial occlusion), and/or more training epochs on
-  `Retail-YU_reformed` (or an expanded equivalent) would likely raise
-  separation and overall lookup accuracy.
+All five models have since gone through a full retraining pass on the
+datasets and augmentations described above (spring/auger occlusion,
+SKU-110K-R's oriented labels, rotation augmentation, plus the
+train/inference parity fixes — gallery-centroid normalization and consistent
+`crop_obb_rotated` black-padding), and recognition results on real photos are
+now good. With model accuracy no longer the bottleneck, the remaining work is
+about gallery coverage, grid correctness, and runtime cost:
+
+- **Grow the product gallery.** Recognition accuracy is now limited mainly by
+  how many real products `gallery/` has reference crops for, not by the
+  embedding model itself. `scripts/gallery_labeler.py` makes adding new
+  products incremental — label a few crops of a new product, the tool
+  recomputes that class's centroid, and it's immediately available to
+  `ProductBank.lookup()`. The natural next step is simply running it against
+  more captured photos to widen SKU coverage (and, while doing so, adopting
+  a naming convention for reference images the matcher should *not* treat as
+  a valid product — e.g. blanks/occluded shots that shouldn't pull a cell
+  toward any class).
+- **Handle empty shelf slots in the grid.** `grid_helper.build_grid` currently
+  derives rows/columns purely from *detected* items, so an empty slot (no
+  product on a shelf) has no corresponding OBB and either shifts the
+  column numbering of everything after it or is silently dropped from the
+  grid. The item detector/grid builder should be tuned to recognize these
+  gaps and either suppress them from the displayed table while still
+  reserving their row/column position (so the rest of the grid stays
+  correctly aligned), or show them as explicit "empty" cells.
+- **Optimize pipeline compute time.** `pipeline.py` currently runs its models
+  strictly sequentially per photo, and the item classifier runs once per
+  detected cell. Likely wins: batching the per-cell embedding lookups into a
+  single forward pass, caching/reusing intermediate results (e.g. the
+  rectified window) across repeated requests, and checking whether the
+  `yolo26s-obb` item detector needs its current `736px` input size or can run
+  smaller without losing recall.
 
 ![Known failure case — accurate summary of debugging this pipeline](screenshots/failure%20case.png)
