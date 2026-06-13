@@ -140,7 +140,7 @@ def order_reading(obbs: np.ndarray, image_h: int) -> list[int]:
 
 
 def crop_from_obb(image: np.ndarray, obb: np.ndarray) -> np.ndarray | None:
-    crop = crop_obb_rotated(image, obb)
+    crop = crop_obb_rotated(image, obb, pad_square=False)
     return crop if crop.size > 0 else None
 
 
@@ -223,10 +223,6 @@ class App:
         self.pipeline     = pipeline
         self.product_bank = pipeline.product_bank
         self.gallery_dir  = gallery_dir
-        # Used only by ProductBank.recompute_class/build_cache to crop the
-        # largest item out of already-cropped gallery images -- the same
-        # detector call the live pipeline uses for product recognition.
-        self.item_detector_fn = lambda img: pipeline._detect_items(img).cpu().numpy().astype(np.float32)
 
         self.entries = [ImageEntry(path=p) for p in image_paths]
         self.img_idx = 0
@@ -571,7 +567,7 @@ class App:
                 self._update_queue.put(("progress", name, done, total))
 
             ok = self.product_bank.recompute_class(
-                name, self.item_detector_fn, gallery_dir=str(self.gallery_dir), progress_cb=cb)
+                name, gallery_dir=str(self.gallery_dir), progress_cb=cb)
             self._update_queue.put(("class_done", name, ok))
         self._update_queue.put(("all_done",))
 

@@ -84,7 +84,7 @@ class Pipeline:
 
     def _classify_items(self, detection: MachineDetection) -> None:
         for cell in detection.grid.cells:
-            crop = crop_obb_rotated(detection.image, cell.obb)
+            crop = crop_obb_rotated(detection.image, cell.obb, pad_square=False)
             if crop.size > 0:
                 cell.product_name, cell.product_score = self.product_bank.lookup(crop)
             else:

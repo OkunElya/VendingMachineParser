@@ -163,22 +163,6 @@ class ProductBank:
         with torch.no_grad():
             return self._model(tensor).cpu().numpy().flatten()
 
-    def _crop_largest_obb(self, img: np.ndarray, item_detector) -> np.ndarray:
-        """Run detector and return a rotation-corrected, square-padded crop
-        of the largest OBB."""
-        from grid_helper import crop_obb_rotated
-        try:
-            obbs = item_detector(img)
-            if obbs is not None and len(obbs):
-                areas = [float(o[2]) * float(o[3]) for o in obbs]
-                best  = obbs[int(np.argmax(areas))]
-                crop  = crop_obb_rotated(img, best)
-                if crop.size > 0:
-                    return crop
-        except Exception:
-            pass
-        return img
-
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -230,17 +214,16 @@ class ProductBank:
             mean_vec = self._matrix[self._names.index(class_name)]
         return float(1.0 - mean_vec @ embedding)
 
-    def build_cache(self, gallery_dir: str, item_detector) -> None:
+    def build_cache(self, gallery_dir: str) -> None:
         """
         Build and save the embedding gallery.
 
         Parameters
         ----------
         gallery_dir : str
-            ImageFolder-style root: <gallery_dir>/<class_name>/<image.*>
-        item_detector : callable
-            (image_bgr: np.ndarray) -> OBBs in xywhr format.
-            Pass pipeline._detect_items.
+            ImageFolder-style root: <gallery_dir>/<class_name>/<image.*>,
+            each image already a single-item crop (as saved by
+            gallery_labeler.py).
         """
         root         = Path(gallery_dir)
         gallery_data: dict[str, np.ndarray] = {}
@@ -255,8 +238,7 @@ class ProductBank:
                 img = cv2.imread(str(img_path))
                 if img is None:
                     continue
-                crop = self._crop_largest_obb(img, item_detector)
-                embeddings.append(self._embed(crop))
+                embeddings.append(self._embed(img))
 
             if embeddings:
                 mean = np.mean(embeddings, axis=0)
@@ -272,7 +254,6 @@ class ProductBank:
 
     def recompute_class(self,
                          class_name:   str,
-                         item_detector,
                          gallery_dir:  str | None = None,
                          progress_cb=None) -> bool:
         """
@@ -296,8 +277,7 @@ class ProductBank:
             img = cv2.imread(str(img_path))
             if img is None:
                 continue
-            crop = self._crop_largest_obb(img, item_detector)
-            embeddings.append(self._embed(crop))
+            embeddings.append(self._embed(img))
             if progress_cb:
                 progress_cb(class_name, i + 1, len(img_paths))
 
