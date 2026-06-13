@@ -140,6 +140,32 @@ def crop_obb_rotated(image: np.ndarray, obb, pad_square: bool = True) -> np.ndar
     return crop
 
 
+def mask_to_polygon(image: np.ndarray, points) -> tuple[np.ndarray, tuple[int, int]]:
+    """Crop `image` to the bounding rect of `points` and zero-fill pixels
+    outside the polygon. Returns (cropped, (x_offset, y_offset)) so OBBs
+    detected in `cropped` can be translated back into `image`'s coordinate
+    space via `offset_obb`."""
+    pts = np.asarray(points, dtype=np.int32)
+    x, y, w, h = cv2.boundingRect(pts)
+    x, y = max(x, 0), max(y, 0)
+    w = min(w, image.shape[1] - x)
+    h = min(h, image.shape[0] - y)
+
+    cropped = image[y:y + h, x:x + w].copy()
+    mask    = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillPoly(mask, [pts - [x, y]], 255)
+    cropped[mask == 0] = 0
+    return cropped, (x, y)
+
+
+def offset_obb(obb, dx: float, dy: float):
+    """Return a copy of xywhr `obb` translated by (dx, dy)."""
+    out = obb.clone() if hasattr(obb, "clone") else obb.copy()
+    out[0] += dx
+    out[1] += dy
+    return out
+
+
 def draw_obb(image, obb, color=(0, 255, 0), thickness=2):
     """Draw a single OBB (xywhr) on image in-place."""
     corners = obb_xywhr_to_corners(obb).astype(np.int32).reshape(-1, 1, 2)

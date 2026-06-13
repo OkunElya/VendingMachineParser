@@ -2,7 +2,7 @@ MODEL_PATHES = {
     "machine_detector": "./models/tuned/vending_machine_detect_yolov10n.pt",
     "machine_classificator": "./models/tuned/vending_machine_classification_yolo26n-cls.pt",
     "window_segmentator": "./models/tuned/window_segmentation_yolo26n-seg.pt",
-    "item_detector": "./models/tuned/items_detect.yolo26s-obb.pt",
+    "item_detector": "./models/tuned/items_detect_yolo26s-obb.pt",
     "item_classificator": "./models/tuned/items_classification_convnext_tiny.fb_in22k_ft_in1k.pt",
 }
 
@@ -18,7 +18,7 @@ ITEM_INPUT_SIZE             = 224   # encoder was fine-tuned on images padded-to
 MACHINE_DETECTOR_CONF   = 0.3
 MACHINE_DETECTOR_IOU    = 0.5
 MACHINE_CLASSIFIER_CONF = 0.25
-ITEM_DETECTOR_CONF      = 0.2
+ITEM_DETECTOR_CONF      = 0.25
 ITEM_DETECTOR_IOU       = 0.5
 ITEM_MERGE_IOU          = 0.3
 

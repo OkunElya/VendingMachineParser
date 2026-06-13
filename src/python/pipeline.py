@@ -26,7 +26,9 @@ from grid_helper import (
     build_grid,
     crop_obb_rotated,
     build_markdown_table,
+    mask_to_polygon,
     merge_overlapping_items,
+    offset_obb,
     visualize_detection,
 )
 from item_classification import ProductBank
@@ -71,6 +73,14 @@ class Pipeline:
         boxes = result.boxes.xywh
         return torch.cat([boxes, torch.zeros((boxes.shape[0], 1), device=boxes.device)], dim=1)
 
+    def _detect_items_in_window(self, machine_bb_img, window_points):
+        """Mask out everything outside the rectified window before running
+        the item detector, then translate the resulting OBBs back into
+        machine_bb_img's coordinate space."""
+        masked, (ox, oy) = mask_to_polygon(machine_bb_img, window_points)
+        obbs = self._detect_items(masked).cpu().numpy().astype(np.float32)
+        return [{"obb": offset_obb(o, ox, oy)} for o in obbs]
+
     def _classify_items(self, detection: MachineDetection) -> None:
         for cell in detection.grid.cells:
             crop = crop_obb_rotated(detection.image, cell.obb)
@@ -79,7 +89,7 @@ class Pipeline:
             else:
                 cell.product_name, cell.product_score = None, 0.0
 
-    def detect(self, image) -> list[MachineDetection]:
+    def detect(self, image, classify: bool = True) -> list[MachineDetection]:
         results: list[MachineDetection] = []
 
         for machine_bb in self._detect_machines(image):
@@ -92,7 +102,7 @@ class Pipeline:
                 print("failed to segment window")
                 continue
 
-            items_list = [{"obb": obb} for obb in self._detect_items(machine_bb_img).cpu()]
+            items_list = self._detect_items_in_window(machine_bb_img, window_points)
             items_list = merge_overlapping_items(items_list, ITEM_MERGE_IOU)
             grid       = build_grid(MACHINE_CLASSES[machine_class_id], window_points, items_list)
 
@@ -105,7 +115,7 @@ class Pipeline:
                 grid=grid,
             )
 
-            if grid is not None:
+            if classify and grid is not None:
                 self._classify_items(detection)
             results.append(detection)
 

@@ -4,9 +4,13 @@ Gallery Labeler
 Interactive tool for building/extending the product embedding gallery
 (`./gallery/<class_name>/*.png`) used by `ProductBank`.
 
-Runs the item detector (same model as `Pipeline._detect_items`, but at the
-image's native resolution) over every image in an input directory. For each
-detected item it shows the crop next to a merged suggestions/search list:
+Runs the full detection pipeline (`Pipeline.detect`, with `classify=False`)
+over every image in an input directory: machine detection -> machine
+classification -> window segmentation -> item detection masked to the
+rectified window. This mirrors exactly what the live API does up to (but
+not including) product recognition, which is what this tool is used to
+build the gallery for. For each detected item it shows the crop next to a
+merged suggestions/search list:
 with no search text it shows the 5 closest existing gallery classes (cosine
 similarity, as a percentage); once you start typing it switches to a fuzzy
 search over class names (with a "+ New class" option to create one).
@@ -50,24 +54,14 @@ from tkinter import messagebox, ttk
 
 import cv2
 import numpy as np
-import torch
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 from rapidfuzz import fuzz, process
-from ultralytics import YOLO
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src" / "python"))
 
-from grid_helper import crop_obb_rotated, draw_obb, merge_overlapping_items
-from item_classification import ProductBank
-from shared import (
-    GALLERY_DIR,
-    IMAGE_EXTS,
-    MODEL_PATHES,
-    ITEM_DETECTOR_CONF,
-    ITEM_DETECTOR_IOU,
-    ITEM_DETECTOR_IMGSZ,
-    ITEM_MERGE_IOU,
-)
+from grid_helper import crop_obb_rotated, draw_obb
+from pipeline import Pipeline
+from shared import GALLERY_DIR, IMAGE_EXTS
 
 # ---------------------------------------------------------------------------
 # Config
@@ -78,7 +72,6 @@ PANEL_W       = 440     # right-hand info panel width
 HEADER_H      = 40
 BOTTOM_H      = 32
 UPDATE_EVERY  = 10
-DETECT_STRIDE = 32      # YOLO stride; imgsz must be a multiple of this
 
 WINDOW_NAME = "Gallery Labeler"
 
@@ -136,31 +129,6 @@ class ImageEntry:
 def collect_images(folder: Path) -> list[Path]:
     return sorted(p for p in folder.iterdir()
                    if p.is_file() and p.suffix.lower() in IMAGE_EXTS)
-
-
-def _round_up(value: float, multiple: int = DETECT_STRIDE) -> int:
-    return int(np.ceil(value / multiple) * multiple)
-
-
-def detect_items(model: YOLO, image_bgr: np.ndarray,
-                  conf: float = ITEM_DETECTOR_CONF, iou: float = ITEM_DETECTOR_IOU) -> np.ndarray:
-    """
-    Return an (N, 5) xywhr array, mirroring Pipeline._detect_items.
-
-    Runs at (close to) the image's native resolution -- imgsz is set from
-    the image's longer side (floored at ITEM_DETECTOR_IMGSZ) so YOLO doesn't
-    downscale it before inference, which keeps small-product crops sharp on
-    high-resolution photos.
-    """
-    h, w   = image_bgr.shape[:2]
-    imgsz  = max(_round_up(max(h, w)), ITEM_DETECTOR_IMGSZ)
-    result = model.predict(image_bgr, verbose=False, conf=conf, iou=iou, imgsz=imgsz)[0]
-    if result.obb is not None:
-        obbs = result.obb.xywhr
-    else:
-        boxes = result.boxes.xywh
-        obbs  = torch.cat([boxes, torch.zeros((boxes.shape[0], 1), device=boxes.device)], dim=1)
-    return obbs.cpu().numpy().astype(np.float32)
 
 
 def order_reading(obbs: np.ndarray, image_h: int) -> list[int]:
@@ -251,15 +219,14 @@ def safe_dirname(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 class App:
-    def __init__(self, image_paths: list[Path], item_model: YOLO,
-                 product_bank: ProductBank, gallery_dir: Path,
-                 conf: float = ITEM_DETECTOR_CONF, iou: float = ITEM_DETECTOR_IOU):
-        self.item_model   = item_model
-        self.product_bank = product_bank
+    def __init__(self, image_paths: list[Path], pipeline: Pipeline, gallery_dir: Path):
+        self.pipeline     = pipeline
+        self.product_bank = pipeline.product_bank
         self.gallery_dir  = gallery_dir
-        self.conf         = conf
-        self.iou          = iou
-        self.item_detector_fn = lambda img: detect_items(self.item_model, img, conf=self.conf, iou=self.iou)
+        # Used only by ProductBank.recompute_class/build_cache to crop the
+        # largest item out of already-cropped gallery images -- the same
+        # detector call the live pipeline uses for product recognition.
+        self.item_detector_fn = lambda img: pipeline._detect_items(img).cpu().numpy().astype(np.float32)
 
         self.entries = [ImageEntry(path=p) for p in image_paths]
         self.img_idx = 0
@@ -336,13 +303,22 @@ class App:
             entry.image = None
             entry.items = []
             return
-        entry.image = img
-        obbs   = self.item_detector_fn(img)
-        merged = merge_overlapping_items([{"obb": obb} for obb in obbs], ITEM_MERGE_IOU)
-        obbs   = [m["obb"] for m in merged]
-        order  = order_reading(obbs, img.shape[0])
+
+        detections = self.pipeline.detect(img, classify=False)
+        if not detections:
+            entry.image    = img
+            entry.items    = []
+            entry.selected = -1
+            return
+
+        det = detections[0]
+        entry.image = det.image  # machine_bb_img: cropped to the detected machine
+        obbs  = [item["obb"] for item in det.items]
+        order = order_reading(obbs, det.image.shape[0])
         entry.items    = [ItemEntry(obb=obbs[i]) for i in order]
         entry.selected = 0 if entry.items else -1
+        if len(detections) > 1:
+            self.status_msg = f"Note: {len(detections)} machines detected, showing #1"
 
     def get_suggestions(self, item: ItemEntry, crop: np.ndarray | None = None) -> list[tuple[str, float]]:
         if item.suggestions is None:
@@ -810,10 +786,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Interactive item-detection gallery builder.")
     parser.add_argument("--input", "-i", required=True, help="Directory of images to process")
     parser.add_argument("--gallery", "-g", default=GALLERY_DIR, help=f"Gallery directory (default: {GALLERY_DIR})")
-    parser.add_argument("--conf", type=float, default=ITEM_DETECTOR_CONF,
-                         help=f"Item detector confidence threshold (default: {ITEM_DETECTOR_CONF})")
-    parser.add_argument("--iou", type=float, default=ITEM_DETECTOR_IOU,
-                         help=f"Item detector NMS IoU threshold (default: {ITEM_DETECTOR_IOU})")
     args = parser.parse_args()
 
     input_dir = Path(args.input).expanduser().resolve()
@@ -826,12 +798,11 @@ def main() -> None:
 
     print(f"{len(images)} images found in {input_dir}")
     print("Loading models...")
-    item_model   = YOLO(MODEL_PATHES["item_detector"])
-    product_bank = ProductBank()
-    gallery_dir  = Path(args.gallery).expanduser().resolve()
+    pipeline    = Pipeline()
+    gallery_dir = Path(args.gallery).expanduser().resolve()
     gallery_dir.mkdir(parents=True, exist_ok=True)
 
-    App(images, item_model, product_bank, gallery_dir, args.conf, args.iou).run()
+    App(images, pipeline, gallery_dir).run()
 
 
 if __name__ == "__main__":
