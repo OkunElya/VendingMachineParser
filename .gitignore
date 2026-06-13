@@ -4,6 +4,7 @@ workspace
 gallery
 uploads
 tokens.yaml
+config.json
 
 *.tar.gz
 yolo26n.pt

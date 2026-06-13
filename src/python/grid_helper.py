@@ -248,7 +248,8 @@ def merge_overlapping_items(items: list, iou_threshold: float = 0.5,
         for j in range(n):
             if i == j or areas[i] >= areas[j]:
                 continue
-            if obb_containment(items[i]["obb"], items[j]["obb"]) >= containment_threshold:
+            containment = obb_containment(items[i]["obb"], items[j]["obb"])
+            if containment > 0 and containment >= containment_threshold:
                 dropped.add(i)
                 break
 
