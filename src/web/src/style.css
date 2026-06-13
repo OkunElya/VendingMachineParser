@@ -209,10 +209,15 @@ canvas {
   border-top: none;
 }
 
+.table-wrapper {
+  overflow-x: auto;
+  max-width: 100%;
+  margin-top: 0.75rem;
+}
+
 table.grid-table {
   border-collapse: collapse;
   width: 100%;
-  margin-top: 0.75rem;
   font-size: 0.85rem;
 }
 

@@ -277,7 +277,10 @@ function renderResults(machines: MachineDetectionResult[], token: string): void 
       dims.textContent = `Grid: ${grid.n_rows} rows × ${grid.n_cols} cols`;
       block.appendChild(dims);
 
-      block.appendChild(buildGridTable(grid.cells, grid.n_rows, grid.n_cols, token));
+      const tableWrapper = document.createElement("div");
+      tableWrapper.className = "table-wrapper";
+      tableWrapper.appendChild(buildGridTable(grid.cells, grid.n_rows, grid.n_cols, token));
+      block.appendChild(tableWrapper);
 
       if (grid.markdown) {
         const details = document.createElement("details");
