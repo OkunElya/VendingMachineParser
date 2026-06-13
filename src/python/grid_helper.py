@@ -185,16 +185,37 @@ def draw_obbs(image, obbs, color=(0, 255, 0), thickness=2):
 # OBB merging helpers
 # ---------------------------------------------------------------------------
 
+def obb_area(obb) -> float:
+    """Area of an OBB (xywhr) in pixels."""
+    return float(cv2.contourArea(obb_xywhr_to_corners(obb)))
+
+
+def obb_intersection_area(obb1, obb2) -> float:
+    c1, c2 = obb_xywhr_to_corners(obb1), obb_xywhr_to_corners(obb2)
+    inter_area, _ = cv2.intersectConvexConvex(c1, c2)
+    return float(max(inter_area, 0.0))
+
+
 def obb_iou(obb1, obb2) -> float:
     """Exact IoU between two OBBs (xywhr) via convex-polygon intersection."""
-    c1, c2 = obb_xywhr_to_corners(obb1), obb_xywhr_to_corners(obb2)
-    area1, area2 = cv2.contourArea(c1), cv2.contourArea(c2)
+    area1, area2 = obb_area(obb1), obb_area(obb2)
     if area1 <= 0 or area2 <= 0:
         return 0.0
-    inter_area, _ = cv2.intersectConvexConvex(c1, c2)
+    inter_area = obb_intersection_area(obb1, obb2)
     if inter_area <= 0:
         return 0.0
-    return float(inter_area / (area1 + area2 - inter_area))
+    return inter_area / (area1 + area2 - inter_area)
+
+
+def obb_containment(obb1, obb2) -> float:
+    """Fraction of the smaller OBB's area covered by the other OBB. Close to
+    1.0 when one OBB fully covers the other, regardless of how large the
+    other one is (unlike IoU, which shrinks as the size difference grows)."""
+    area1, area2 = obb_area(obb1), obb_area(obb2)
+    if area1 <= 0 or area2 <= 0:
+        return 0.0
+    inter_area = obb_intersection_area(obb1, obb2)
+    return inter_area / min(area1, area2)
 
 
 def merge_obbs(obbs) -> np.ndarray:
@@ -205,10 +226,33 @@ def merge_obbs(obbs) -> np.ndarray:
     return np.array([cx, cy, w, h, np.radians(angle)], dtype=np.float32)
 
 
-def merge_overlapping_items(items: list, iou_threshold: float = 0.5) -> list:
+def merge_overlapping_items(items: list, iou_threshold: float = 0.5,
+                             containment_threshold: float = 0.9) -> list:
     """Merge item OBBs whose pairwise IoU exceeds `iou_threshold` into a single
     bounding OBB. Items are transitively grouped, so chains of overlapping
-    boxes collapse into one merged box per cluster."""
+    boxes collapse into one merged box per cluster.
+
+    Before merging, any item whose area is almost entirely (>=
+    `containment_threshold`) covered by a larger item is dropped outright.
+    IoU alone misses this case: a small box fully inside a much larger one
+    has a low IoU (it's a tiny fraction of the big box's area) even though
+    it's clearly a spurious duplicate detection of the same item, not a
+    separate one worth keeping or merging into an even bigger box."""
+    n = len(items)
+    if n <= 1:
+        return items
+
+    areas = [obb_area(item["obb"]) for item in items]
+    dropped: set[int] = set()
+    for i in range(n):
+        for j in range(n):
+            if i == j or areas[i] >= areas[j]:
+                continue
+            if obb_containment(items[i]["obb"], items[j]["obb"]) >= containment_threshold:
+                dropped.add(i)
+                break
+
+    items = [item for i, item in enumerate(items) if i not in dropped]
     n = len(items)
     if n <= 1:
         return items

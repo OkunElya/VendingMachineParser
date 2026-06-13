@@ -21,6 +21,7 @@ MACHINE_CLASSIFIER_CONF = 0.25
 ITEM_DETECTOR_CONF      = 0.25
 ITEM_DETECTOR_IOU       = 0.5
 ITEM_MERGE_IOU          = 0.3
+ITEM_MERGE_CONTAINMENT  = 0.9   # drop an item if this fraction of its area is covered by a larger item
 
 # Input image size passed to each YOLO model's predict() call. Lower values
 # cut inference time at the cost of accuracy (smaller objects become harder

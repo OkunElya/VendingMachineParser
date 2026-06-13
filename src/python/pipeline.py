@@ -19,6 +19,7 @@ from shared import (
     ITEM_DETECTOR_IOU,
     ITEM_DETECTOR_IMGSZ,
     ITEM_MERGE_IOU,
+    ITEM_MERGE_CONTAINMENT,
 )
 from window_segmentator import WindowSegmentator
 from grid_helper import (
@@ -103,7 +104,7 @@ class Pipeline:
                 continue
 
             items_list = self._detect_items_in_window(machine_bb_img, window_points)
-            items_list = merge_overlapping_items(items_list, ITEM_MERGE_IOU)
+            items_list = merge_overlapping_items(items_list, ITEM_MERGE_IOU, ITEM_MERGE_CONTAINMENT)
             grid       = build_grid(MACHINE_CLASSES[machine_class_id], window_points, items_list)
 
             detection = MachineDetection(
